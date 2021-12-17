@@ -1,8 +1,6 @@
 from habitat_baselines.rl.ppo.policy import PointNavBaselinePolicy
 from habitat_baselines.utils.common import batch_obs
-from habitat.core.spaces import ActionSpace
 
-import cv2
 from gym import spaces
 from gym.spaces import Dict as SpaceDict
 import torch
@@ -107,7 +105,7 @@ class GazePolicy(RealPolicy):
 
 if __name__ == "__main__":
     gaze_policy = GazePolicy(
-        "/Users/naokiyokoyama/gt/spot/spot_rl_experiments/bbox_mask_5thresh_autograsp_shortrange_seed1_36.pth",
+        "weights/bbox_mask_5thresh_autograsp_shortrange_seed1_36.pth",
         device="cpu",
     )
     gaze_policy.reset()

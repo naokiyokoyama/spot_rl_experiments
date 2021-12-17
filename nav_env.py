@@ -1,6 +1,5 @@
 import cv2
 import gym
-from gym import spaces
 import numpy as np
 import time
 
@@ -13,27 +12,10 @@ from bd_spot_wrapper.spot import (
 from bd_spot_wrapper.utils import color_bbox, say
 
 CTRL_HZ = 1.0
-INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -150, 120, 0, 75, 0])
-JOINT_BLACKLIST = ["arm0.el0", "arm0.wr1"]  # joints we can't control
 MAX_EPISODE_STEPS = 120
-OBJECT_LOCK_ON_NEEDED = 3
-CENTER_TOLERANCE = 0.25
-ACTUALLY_GRASP = True
-ACTUALLY_MOVE_ARM = True
-MAX_JOINT_MOVEMENT = 0.0698132
 
-
-def pad_action(action):
-    """We only control 4 out of 6 joints; add zeros to non-controllable indices."""
-    return np.array([*action[:3], 0.0, action[3], 0.0])
-
-
-class SpotGazeEnv(gym.Env):
+class SpotNavEnv(gym.Env):
     def __init__(self, spot: Spot):
-        # Standard Gym stuff
-        self.observation_space = spaces.Dict()
-        self.action_space = spaces.Dict()
-
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
         spot.power_on()
