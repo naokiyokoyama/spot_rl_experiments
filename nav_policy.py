@@ -27,13 +27,13 @@ class NavPolicy(RealPolicy):
             }
         )
         # Linear, angular, and horizontal velocity (in that order)
-        action_space = spaces.Box(-1.0, 1.0, (3,))
+        action_space = spaces.Box(-1.0, 1.0, (2,))
         super().__init__(checkpoint_path, observation_space, action_space, device)
 
 
 if __name__ == "__main__":
     nav_policy = NavPolicy(
-        "weights/bbox_mask_5thresh_autograsp_shortrange_seed1_36.pth",
+        "weights/two_cams_with_noise_seed4_ckpt.4.pth",
         device="cpu",
     )
     nav_policy.reset()

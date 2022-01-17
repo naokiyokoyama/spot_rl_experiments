@@ -8,11 +8,46 @@ from bd_spot_wrapper.spot import (
     SpotCamIds,
     image_response_to_cv2,
     scale_depth_img,
+    wrap_heading,
 )
-from bd_spot_wrapper.utils import color_bbox, say
+from bd_spot_wrapper.utils import say
+from nav_policy import NavPolicy
 
 CTRL_HZ = 1.0
 MAX_EPISODE_STEPS = 120
+MAX_LIN_VEL = 0.5  # m/s
+MAX_ANG_VEL = 0.523599  # 30 degrees/s, in radians
+SUCCESS_DISTANCE = 0.3
+SUCCESS_ANGLE_DIST = 0.0872665  # 5 radians
+VEL_TIME = 0.5
+NAV_WEIGHTS = "weights/two_cams_with_noise_seed4_ckpt.4.pth"
+GOAL_XY = [-11/2, -11/2]
+GOAL_HEADING = np.deg2rad(90)  # positive direction is CCW
+MAX_DEPTH = 3.5
+# POINTGOAL_UUID = "target_point_goal_gps_and_compass_sensor"
+POINTGOAL_UUID = "pointgoal_with_gps_compass"
+
+
+def main(spot):
+    env = SpotNavEnv(spot)
+    policy = NavPolicy(NAV_WEIGHTS, device="cpu")
+    policy.reset()
+    observations = env.reset(GOAL_XY, GOAL_HEADING)
+    done = False
+    say("Starting episode")
+    time.sleep(2)
+    try:
+        while not done:
+            # start_time = time.time()
+            action = policy.act(observations)
+            # print("Action inference time: ", time.time() - start_time)
+            # print(action)
+            observations, _, done, _ = env.step(action)
+        say("Environment is done.")
+        time.sleep(20)
+    finally:
+        spot.power_off()
+
 
 class SpotNavEnv(gym.Env):
     def __init__(self, spot: Spot):
@@ -21,28 +56,24 @@ class SpotNavEnv(gym.Env):
         spot.power_on()
         say("Standing up")
         spot.blocking_stand()
-        spot.open_gripper()
 
         self.spot = spot
-        self.locked_on_object_count = 0
         self.num_steps = 0
-        self.current_positions = np.zeros(6)
         self.reset_ran = False
+        self.goal_xy = None  # this is where the pointgoal is stored
+        self.goal_heading = None  # this is where the goal heading is stored
+        self.yaw = None
 
-    def reset(self):
-        # Move arm to initial configuration
-        self.spot.open_gripper()
-        cmd_id = self.spot.set_arm_joint_positions(
-            positions=INITIAL_ARM_JOINT_ANGLES, travel_time=2
-        )
-        self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
-
+    def reset(self, goal_xy, goal_heading):
         # Reset parameters
-        self.locked_on_object_count = 0
         self.num_steps = 0
         self.reset_ran = True
+        self.goal_xy = np.array(goal_xy, dtype=np.float32)
+        self.goal_heading = goal_heading
+        assert len(self.goal_xy) == 2
 
         observations = self.get_observations()
+
         return observations
 
     def step(self, action):
@@ -53,86 +84,79 @@ class SpotNavEnv(gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
 
-        # Move the arm
-        padded_action = pad_action(action)  # insert zeros for joints we don't control
-        padded_action = np.clip(padded_action, -1.0, 1.0) * MAX_JOINT_MOVEMENT
-        target_positions = np.clip(
-            self.current_positions + padded_action, -np.pi, np.pi
-        )
-        if ACTUALLY_MOVE_ARM:
-            _ = self.spot.set_arm_joint_positions(
-                positions=target_positions, travel_time=1 / CTRL_HZ
-            )
+        # Command velocities using the input action
+        x_vel, ang_vel = action
+        x_vel = np.clip(x_vel, -1, 1) * MAX_LIN_VEL
+        ang_vel = np.clip(ang_vel, -1, 1) * MAX_ANG_VEL
 
-        # Get observation
-        time.sleep(1 / CTRL_HZ)
+        # TODO: HACK!! Need to do this smarter
+        self.spot.set_base_velocity(x_vel, 0.0, ang_vel, VEL_TIME)  # 0.0 for y_vel
+        time.sleep(VEL_TIME)
+
         observations = self.get_observations()
+        self.print_stats(observations)
 
-        # Grasp object if conditions are met
-        grasp = self.locked_on_object_count == OBJECT_LOCK_ON_NEEDED
-        if grasp:
-            say("Locked on, executing auto grasp")
-            self.spot.loginfo("Conditions for auto-grasp have been met!")
-            if ACTUALLY_GRASP:
-                # Grab whatever object is at the center of hand RGB camera image
-                self.spot.grasp_center_of_hand_depth()
-                # Return to pre-grasp joint positions
-                cmd_id = self.spot.set_arm_joint_positions(
-                    positions=self.current_positions, travel_time=1.0
-                )
-                self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
-            else:
-                time.sleep(5)
-
-        done = self.num_steps == MAX_EPISODE_STEPS or grasp
+        done = self.num_steps == MAX_EPISODE_STEPS or self.get_success(observations)
 
         # Don't need reward or info
         reward, info = None, {}
         return observations, reward, done, info
 
+    @staticmethod
+    def get_success(obs):
+        # Is the agent at the goal?
+        dist_to_goal, _ = obs[POINTGOAL_UUID]
+        at_goal = dist_to_goal < SUCCESS_DISTANCE
+        good_heading = abs(obs["goal_heading"][0]) < SUCCESS_ANGLE_DIST
+        print(f"at_goal: {at_goal} good_heading: {good_heading}")
+        return at_goal and good_heading
+
+    def print_stats(self, observations):
+        rho, theta = observations[POINTGOAL_UUID]
+        print(
+            f"Dist to goal: {rho:.2f}\t"
+            f"theta: {np.rad2deg(theta):.2f}\t"
+            f"x: {self.x:.2f}\t"
+            f"y: {self.y:.2f}\t"
+            f"yaw: {np.rad2deg(self.yaw):.2f}\t"
+        )
+
+    @staticmethod
+    def transform_depth_response(depth_response):
+        depth_cv2 = image_response_to_cv2(depth_response)
+        rotated_depth_cv2 = np.rot90(depth_cv2, k=3)
+        scaled_depth_cv2 = scale_depth_img(rotated_depth_cv2, max_depth=MAX_DEPTH)
+        resized_depth_cv2 = cv2.resize(scaled_depth_cv2, (120, 212))
+        unsqueezed_depth_cv2 = resized_depth_cv2.reshape(
+            [*resized_depth_cv2.shape[:2], 1]
+        )
+        return unsqueezed_depth_cv2
+
     def get_observations(self):
-        # Get proprioception inputs
-        arm_proprioception = self.spot.get_arm_proprioception()
-        self.current_positions = np.array(
-            [v.position.value for v in arm_proprioception.values()]
-        )
-        joints = np.array(
-            [
-                v.position.value
-                for v in arm_proprioception.values()
-                if v.name not in JOINT_BLACKLIST
-            ],
-            dtype=np.float32,
-        )
-        assert len(joints) == 4
+        sources = [SpotCamIds.FRONTLEFT_DEPTH, SpotCamIds.FRONTRIGHT_DEPTH]
+        image_responses = self.spot.get_image_responses(sources)
+        spot_left_depth, spot_right_depth = [
+            self.transform_depth_response(r) for r in image_responses
+        ]
 
-        # Get visual inputs
-        image_responses = self.spot.get_image_responses(
-            [SpotCamIds.HAND_COLOR, SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME]
-        )
-        arm_rgb, raw_arm_depth = [image_response_to_cv2(i) for i in image_responses]
-        arm_depth = scale_depth_img(raw_arm_depth, max_depth=10.0)
-        arm_rgb, arm_depth = [cv2.resize(i, (320, 240)) for i in [arm_rgb, arm_depth]]
-        arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
-        arm_depth_bbox, cx, cy, crosshair_in_bbox = color_bbox(arm_rgb)
-        locked_on = crosshair_in_bbox and all(
-            [abs(c - 0.5) < CENTER_TOLERANCE for c in [cx, cy]]
-        )
-        if locked_on:
-            self.locked_on_object_count += 1
-            self.spot.loginfo(
-                f"Locked on to target {self.locked_on_object_count} time(s)..."
-            )
-        else:
-            if self.locked_on_object_count > 0:
-                self.spot.loginfo("Lost lock-on!")
-            self.locked_on_object_count = 0
+        x, y, self.yaw = self.spot.get_xy_yaw()
+        curr_xy = np.array([x, y], dtype=np.float32)
+        rho = np.linalg.norm(curr_xy - self.goal_xy)
+        theta = np.arctan2(self.goal_xy[1] - y, self.goal_xy[0] - x) - self.yaw
+        rho_theta = np.array([rho, wrap_heading(theta)], dtype=np.float32)
 
+        goal_heading = -np.array([self.goal_heading - self.yaw], dtype=np.float32)
         observations = {
-            "joint": joints,
-            "is_holding": np.zeros(1, dtype=np.float32),
-            "arm_depth": arm_depth,
-            "arm_depth_bbox": arm_depth_bbox,
+            "spot_left_depth": spot_left_depth,
+            "spot_right_depth": spot_right_depth,
+            POINTGOAL_UUID: rho_theta,
+            "goal_heading": goal_heading,
         }
+        self.x, self.y = x, y
 
         return observations
+
+if __name__ == "__main__":
+    spot = Spot("RealNavEnv")
+    with spot.get_lease():
+        main(spot)
