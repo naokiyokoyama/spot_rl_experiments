@@ -2,3 +2,4 @@
 __pycache__
 bd_spot_wrapper
 *.DS_Store
+weights
