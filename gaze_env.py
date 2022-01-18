@@ -4,6 +4,7 @@ from gym import spaces
 import numpy as np
 import time
 
+from gaze_policy import GazePolicy
 from bd_spot_wrapper.spot import (
     Spot,
     SpotCamIds,
@@ -21,6 +22,15 @@ CENTER_TOLERANCE = 0.25
 ACTUALLY_GRASP = True
 ACTUALLY_MOVE_ARM = True
 MAX_JOINT_MOVEMENT = 0.0698132
+MAX_DEPTH = 10.0
+
+USE_MASK_RCNN = True
+DET_TOPIC = "/mask_rcnn_detections"
+if USE_MASK_RCNN:
+    import rospy
+    from std_msgs.msg import String
+
+    TARGET_OBJ_ID = 3  # rubiks cube
 
 
 def pad_action(action):
@@ -46,6 +56,13 @@ class SpotGazeEnv(gym.Env):
         self.num_steps = 0
         self.current_positions = np.zeros(6)
         self.reset_ran = False
+
+        # Use ROS if we use MRCNN
+        if USE_MASK_RCNN:
+            rospy.init_node("gaze_env")
+            self.det_sub = rospy.Subscriber(DET_TOPIC, String, self.det_callback)
+            self.detections = "None"
+            self.target_obj_id = TARGET_OBJ_ID
 
     def reset(self):
         # Move arm to initial configuration
@@ -129,10 +146,13 @@ class SpotGazeEnv(gym.Env):
             [SpotCamIds.HAND_COLOR, SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME]
         )
         arm_rgb, raw_arm_depth = [image_response_to_cv2(i) for i in image_responses]
-        arm_depth = scale_depth_img(raw_arm_depth, max_depth=10.0)
+        arm_depth = scale_depth_img(raw_arm_depth, max_depth=MAX_DEPTH)
         arm_rgb, arm_depth = [cv2.resize(i, (320, 240)) for i in [arm_rgb, arm_depth]]
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
-        arm_depth_bbox, cx, cy, crosshair_in_bbox = color_bbox(arm_rgb)
+        if USE_MASK_RCNN:
+            arm_depth_bbox, cx, cy, crosshair_in_bbox = self.get_mrcnn_det()
+        else:
+            arm_depth_bbox, cx, cy, crosshair_in_bbox = color_bbox(arm_rgb)
         locked_on = crosshair_in_bbox and all(
             [abs(c - 0.5) < CENTER_TOLERANCE for c in [cx, cy]]
         )
@@ -154,3 +174,71 @@ class SpotGazeEnv(gym.Env):
         }
 
         return observations
+
+    def get_mrcnn_det(self):
+        arm_depth_bbox = np.zeros([240, 320, 1], dtype=np.float32)
+        no_detection = arm_depth_bbox, 0.0, 0.0, False
+        if self.detections == "None":
+            return no_detection
+
+        # Check if desired object is in view of camera
+        def correct_class(detection):
+            return int(detection.split(",")[0]) == self.target_obj_id
+        matching_detections = [
+            d for d in self.detections.split(";") if correct_class(d)
+        ]
+        if not matching_detections:
+            return no_detection
+
+        # Get object prediction with the highest score
+        def get_score(detection):
+            return float(detection.split(",")[1])
+        best_detection = sorted(matching_detections, key=get_score)[-1]
+        x1, y1, x2, y2 = [int(float(i)) for i in best_detection.split(",")[-4:]]
+
+        # Create bbox mask from selected detection
+        # TODO: Fix this
+        height, width = 480.0, 640.0
+        cx = np.mean([x1, x2]) / width
+        cy = np.mean([y1, y2]) / height
+        y_min, y_max = int(y1 / 2), int(y2 / 2)
+        x_min, x_max = int(x1 / 2), int(x2 / 2)
+        arm_depth_bbox[y_min:y_max, x_min:x_max] = 1.0
+
+        cv2.imshow('ff', np.uint8(arm_depth_bbox * 255))
+        cv2.waitKey(1)
+
+        # Determine if bbox intersects with central crosshair
+        crosshair_in_bbox = x1 < width // 2 < x2 and y1 < height // 2 < y2
+
+        return arm_depth_bbox, cx, cy, crosshair_in_bbox
+
+    def det_callback(self, str_msg):
+        self.detections = str_msg.data
+
+
+def main(spot):
+    env = SpotGazeEnv(spot)
+    policy = GazePolicy(
+        "weights/gaze_ckpt.93.pth", device="cuda"
+    )
+    policy.reset()
+    observations = env.reset()
+    done = False
+    say("Starting episode")
+    time.sleep(2)
+    try:
+        while not done:
+            # start_time = time.time()
+            action = policy.act(observations)
+            # print("Action inference time: ", time.time() - start_time)
+            # print(action)
+            observations, _, done, _ = env.step(action)
+        time.sleep(20)
+    finally:
+        spot.power_off()
+
+if __name__ == "__main__":
+    spot = Spot("RealGazeEnv")
+    with spot.get_lease():
+        main(spot)
