@@ -1,5 +1,3 @@
-import cv2
-import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
@@ -29,20 +27,9 @@ class SpotRosNode:
             for i in self.sources
         ]
 
-        # Instantiate filtered image publishers
-        self.filter_front_depth = (
-            SpotCamIds.FRONTLEFT_DEPTH in self.sources
-            and SpotCamIds.FRONTRIGHT_DEPTH in self.sources
-        )
-        if self.filter_front_depth:
-            self.filtered_front_depth_pub = rospy.Publisher(
-                FILTERED_FRONT_DEPTH_PUB, Image, queue_size=5
-            )
-
     def publish_msgs(self):
         image_responses = self.spot.get_image_responses(self.sources)
         # Publish raw images
-        depth_eyes = {}
         for pub, src, response in zip(self.img_pubs, self.sources, image_responses):
             img = image_response_to_cv2(response)
             if "depth" in src:
@@ -53,33 +40,6 @@ class SpotRosNode:
                 img_type = "mono8"
             img_msg = self.cv_bridge.cv2_to_imgmsg(img, img_type)
             pub.publish(img_msg)
-
-            # Store images that need to be published
-            if (
-                src in [SpotCamIds.FRONTRIGHT_DEPTH, SpotCamIds.FRONTLEFT_DEPTH]
-                and self.filter_front_depth
-            ):
-                depth_eyes[src] = img
-
-        # Filter and publish
-        if self.filter_front_depth:
-            # Merge
-            merged = np.hstack(
-                [
-                    depth_eyes[SpotCamIds.FRONTRIGHT_DEPTH],
-                    depth_eyes[SpotCamIds.FRONTLEFT_DEPTH],
-                ]
-            )
-            merged = np.uint8(merged * 255).reshape(merged.shape[:2])
-            # Blur
-            for _ in range(10):
-                denoised = cv2.medianBlur(merged, 9)
-                denoised[merged > 0] = merged[merged > 0]
-                merged = denoised
-            img = np.float32(merged) / 255.0
-
-            filtered_msg = self.cv_bridge.cv2_to_imgmsg(img, "mono16")
-            self.filtered_front_depth_pub.publish(filtered_msg)
 
 
 def main():

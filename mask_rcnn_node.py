@@ -65,5 +65,6 @@ def main():
     while not rospy.is_shutdown():
         mrn.publish_detection()
 
+
 if __name__ == '__main__':
     main()
