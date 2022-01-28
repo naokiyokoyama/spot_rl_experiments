@@ -1,7 +1,7 @@
 from gaze_env import SpotGazeEnv
-from gaze_policy import GazePolicy
-from bd_spot_wrapper.utils import say
-from bd_spot_wrapper.spot import Spot
+from real_policy import GazePolicy
+from spot_wrapper.utils import say
+from spot_wrapper.spot import Spot
 import time
 
 def main(spot):

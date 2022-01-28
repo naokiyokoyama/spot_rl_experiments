@@ -1,5 +1,5 @@
 from mask_rcnn_detectron2.inference import MaskRcnnInference
-from bd_spot_wrapper.spot import (
+from spot_wrapper.spot import (
     Spot,
     SpotCamIds,
     image_response_to_cv2,

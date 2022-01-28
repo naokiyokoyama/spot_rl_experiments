@@ -4,17 +4,20 @@ from gym import spaces
 import numpy as np
 import time
 
-from gaze_policy import GazePolicy
-from bd_spot_wrapper.spot import (
+from real_policy import GazePolicy
+from spot_wrapper.spot import (
     Spot,
     SpotCamIds,
     image_response_to_cv2,
     scale_depth_img,
 )
-from bd_spot_wrapper.utils import color_bbox, say
+from spot_wrapper.utils import color_bbox, say
 
-CTRL_HZ = 1.0
-INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -150, 120, 0, 75, 0])
+# CTRL_HZ = 1.0
+CTRL_HZ = 5
+INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 75, 0])
+ARM_LOWER_LIMITS = np.deg2rad([-45, -180, 0, 0, -90, 0])
+ARM_UPPER_LIMITS = np.deg2rad([45, -45, 135, 0, 90, 0])
 JOINT_BLACKLIST = ["arm0.el0", "arm0.wr1"]  # joints we can't control
 MAX_EPISODE_STEPS = 120
 OBJECT_LOCK_ON_NEEDED = 3
@@ -25,12 +28,14 @@ MAX_JOINT_MOVEMENT = 0.0698132
 MAX_DEPTH = 10.0
 
 USE_MASK_RCNN = True
+TARGET_OBJ_ID = 3  # rubiks cube
 DET_TOPIC = "/mask_rcnn_detections"
-if USE_MASK_RCNN:
+
+try:
     import rospy
     from std_msgs.msg import String
-
-    TARGET_OBJ_ID = 3  # rubiks cube
+except:
+    print("rospy failed to load. If you're using Mask RCNN node it won't work.")
 
 
 def pad_action(action):
@@ -39,7 +44,7 @@ def pad_action(action):
 
 
 class SpotGazeEnv(gym.Env):
-    def __init__(self, spot: Spot):
+    def __init__(self, spot: Spot, use_mask_rcnn=USE_MASK_RCNN):
         # Standard Gym stuff
         self.observation_space = spaces.Dict()
         self.action_space = spaces.Dict()
@@ -58,7 +63,8 @@ class SpotGazeEnv(gym.Env):
         self.reset_ran = False
 
         # Use ROS if we use MRCNN
-        if USE_MASK_RCNN:
+        self.use_mask_rcnn = use_mask_rcnn
+        if self.use_mask_rcnn:
             rospy.init_node("gaze_env")
             self.det_sub = rospy.Subscriber(DET_TOPIC, String, self.det_callback)
             self.detections = "None"
@@ -66,7 +72,6 @@ class SpotGazeEnv(gym.Env):
 
     def reset(self):
         # Move arm to initial configuration
-        self.spot.open_gripper()
         cmd_id = self.spot.set_arm_joint_positions(
             positions=INITIAL_ARM_JOINT_ANGLES, travel_time=2
         )
@@ -92,7 +97,7 @@ class SpotGazeEnv(gym.Env):
         padded_action = pad_action(action)  # insert zeros for joints we don't control
         padded_action = np.clip(padded_action, -1.0, 1.0) * MAX_JOINT_MOVEMENT
         target_positions = np.clip(
-            self.current_positions + padded_action, -np.pi, np.pi
+            self.current_positions + padded_action, ARM_LOWER_LIMITS, ARM_UPPER_LIMITS
         )
         if ACTUALLY_MOVE_ARM:
             _ = self.spot.set_arm_joint_positions(
@@ -100,9 +105,19 @@ class SpotGazeEnv(gym.Env):
             )
 
         # Get observation
-        time.sleep(1 / CTRL_HZ)
+        time.sleep(0.5 / CTRL_HZ)
         observations = self.get_observations()
 
+        # Grasp object if conditions are met
+        final_act_attempted = self.final_action()
+
+        done = self.num_steps == MAX_EPISODE_STEPS or final_act_attempted
+
+        # Don't need reward or info
+        reward, info = None, {}
+        return observations, reward, done, info
+
+    def final_action(self):
         # Grasp object if conditions are met
         grasp = self.locked_on_object_count == OBJECT_LOCK_ON_NEEDED
         if grasp:
@@ -118,14 +133,9 @@ class SpotGazeEnv(gym.Env):
                 self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
             else:
                 time.sleep(5)
+        return grasp
 
-        done = self.num_steps == MAX_EPISODE_STEPS or grasp
-
-        # Don't need reward or info
-        reward, info = None, {}
-        return observations, reward, done, info
-
-    def get_observations(self):
+    def get_joints(self):
         # Get proprioception inputs
         arm_proprioception = self.spot.get_arm_proprioception()
         self.current_positions = np.array(
@@ -141,6 +151,9 @@ class SpotGazeEnv(gym.Env):
         )
         assert len(joints) == 4
 
+        return joints
+
+    def get_observations(self):
         # Get visual inputs
         image_responses = self.spot.get_image_responses(
             [SpotCamIds.HAND_COLOR, SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME]
@@ -149,7 +162,7 @@ class SpotGazeEnv(gym.Env):
         arm_depth = scale_depth_img(raw_arm_depth, max_depth=MAX_DEPTH)
         arm_rgb, arm_depth = [cv2.resize(i, (320, 240)) for i in [arm_rgb, arm_depth]]
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
-        if USE_MASK_RCNN:
+        if self.use_mask_rcnn:
             arm_depth_bbox, cx, cy, crosshair_in_bbox = self.get_mrcnn_det()
         else:
             arm_depth_bbox, cx, cy, crosshair_in_bbox = color_bbox(arm_rgb)
@@ -167,7 +180,7 @@ class SpotGazeEnv(gym.Env):
             self.locked_on_object_count = 0
 
         observations = {
-            "joint": joints,
+            "joint": self.get_joints(),
             "is_holding": np.zeros(1, dtype=np.float32),
             "arm_depth": arm_depth,
             "arm_depth_bbox": arm_depth_bbox,
@@ -184,6 +197,7 @@ class SpotGazeEnv(gym.Env):
         # Check if desired object is in view of camera
         def correct_class(detection):
             return int(detection.split(",")[0]) == self.target_obj_id
+
         matching_detections = [
             d for d in self.detections.split(";") if correct_class(d)
         ]
@@ -193,6 +207,7 @@ class SpotGazeEnv(gym.Env):
         # Get object prediction with the highest score
         def get_score(detection):
             return float(detection.split(",")[1])
+
         best_detection = sorted(matching_detections, key=get_score)[-1]
         x1, y1, x2, y2 = [int(float(i)) for i in best_detection.split(",")[-4:]]
 
@@ -205,7 +220,7 @@ class SpotGazeEnv(gym.Env):
         x_min, x_max = int(x1 / 2), int(x2 / 2)
         arm_depth_bbox[y_min:y_max, x_min:x_max] = 1.0
 
-        cv2.imshow('ff', np.uint8(arm_depth_bbox * 255))
+        cv2.imshow("ff", np.uint8(arm_depth_bbox * 255))
         cv2.waitKey(1)
 
         # Determine if bbox intersects with central crosshair
@@ -219,9 +234,7 @@ class SpotGazeEnv(gym.Env):
 
 def main(spot):
     env = SpotGazeEnv(spot)
-    policy = GazePolicy(
-        "weights/gaze_ckpt.93.pth", device="cuda"
-    )
+    policy = GazePolicy("weights/gaze_ckpt.93.pth", device="cuda")
     policy.reset()
     observations = env.reset()
     done = False
@@ -237,6 +250,7 @@ def main(spot):
         time.sleep(20)
     finally:
         spot.power_off()
+
 
 if __name__ == "__main__":
     spot = Spot("RealGazeEnv")

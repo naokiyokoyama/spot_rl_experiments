@@ -1,17 +1,18 @@
+import time
+
 import cv2
 import gym
 import numpy as np
-import time
-
-from bd_spot_wrapper.spot import (
+from spot_wrapper.spot import (
     Spot,
     SpotCamIds,
     image_response_to_cv2,
     scale_depth_img,
     wrap_heading,
 )
-from bd_spot_wrapper.utils import say
-from nav_policy import NavPolicy
+from spot_wrapper.utils import say
+
+from real_policy import NavPolicy
 
 CTRL_HZ = 1.0
 MAX_EPISODE_STEPS = 120
@@ -21,8 +22,8 @@ SUCCESS_DISTANCE = 0.3
 SUCCESS_ANGLE_DIST = 0.0872665  # 5 radians
 VEL_TIME = 0.5
 NAV_WEIGHTS = "weights/two_cams_with_noise_seed4_ckpt.4.pth"
-GOAL_XY = [-11/2, -11/2]
-GOAL_HEADING = np.deg2rad(90)  # positive direction is CCW
+GOAL_XY = [17 / 2, -10 / 2]
+GOAL_HEADING = np.deg2rad(0)  # positive direction is CCW
 MAX_DEPTH = 3.5
 # POINTGOAL_UUID = "target_point_goal_gps_and_compass_sensor"
 POINTGOAL_UUID = "pointgoal_with_gps_compass"
@@ -119,6 +120,7 @@ class SpotNavEnv(gym.Env):
             f"x: {self.x:.2f}\t"
             f"y: {self.y:.2f}\t"
             f"yaw: {np.rad2deg(self.yaw):.2f}\t"
+            f"gh: {np.rad2deg(observations['goal_heading'][0]):.2f}\t"
         )
 
     @staticmethod
@@ -126,11 +128,7 @@ class SpotNavEnv(gym.Env):
         depth_cv2 = image_response_to_cv2(depth_response)
         rotated_depth_cv2 = np.rot90(depth_cv2, k=3)
         scaled_depth_cv2 = scale_depth_img(rotated_depth_cv2, max_depth=MAX_DEPTH)
-        resized_depth_cv2 = cv2.resize(scaled_depth_cv2, (120, 212))
-        unsqueezed_depth_cv2 = resized_depth_cv2.reshape(
-            [*resized_depth_cv2.shape[:2], 1]
-        )
-        return unsqueezed_depth_cv2
+        return scaled_depth_cv2
 
     def get_observations(self):
         sources = [SpotCamIds.FRONTLEFT_DEPTH, SpotCamIds.FRONTRIGHT_DEPTH]
@@ -138,6 +136,24 @@ class SpotNavEnv(gym.Env):
         spot_left_depth, spot_right_depth = [
             self.transform_depth_response(r) for r in image_responses
         ]
+
+        # Merge, blur, split
+        merged = np.hstack([spot_right_depth, spot_left_depth])
+        merged = np.uint8(merged * 255).reshape(merged.shape[:2])
+        for _ in range(10):
+            denoised = cv2.medianBlur(merged, 9)
+            denoised[merged > 0] = merged[merged > 0]
+            merged = denoised
+        merged = np.float32(merged) / 255.0
+        spot_right_depth = merged[:, :240].reshape([*spot_right_depth.shape[:2], 1])
+        spot_left_depth = merged[:, 240:].reshape([*spot_left_depth.shape[:2], 1])
+        spot_right_depth = cv2.resize(spot_right_depth, (120, 212))
+        spot_right_depth = spot_right_depth.reshape([*spot_right_depth.shape[:2], 1])
+        spot_left_depth = cv2.resize(spot_left_depth, (120, 212))
+        spot_left_depth = spot_left_depth.reshape([*spot_left_depth.shape[:2], 1])
+
+        cv2.imshow("ff", np.uint8(np.hstack([spot_right_depth, spot_left_depth]) * 255))
+        cv2.waitKey(1)
 
         x, y, self.yaw = self.spot.get_xy_yaw()
         curr_xy = np.array([x, y], dtype=np.float32)
@@ -155,6 +171,7 @@ class SpotNavEnv(gym.Env):
         self.x, self.y = x, y
 
         return observations
+
 
 if __name__ == "__main__":
     spot = Spot("RealNavEnv")
