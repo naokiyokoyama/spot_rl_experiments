@@ -25,9 +25,7 @@ def to_tensor(v):
 
 
 class RealPolicy:
-    def __init__(
-        self, checkpoint_path, observation_space, action_space, device, opts=[]
-    ):
+    def __init__(self, checkpoint_path, observation_space, action_space, device):
         self.device = device
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
