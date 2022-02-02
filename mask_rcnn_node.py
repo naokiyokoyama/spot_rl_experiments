@@ -1,33 +1,36 @@
-from mask_rcnn_detectron2.inference import MaskRcnnInference
-from spot_wrapper.spot import (
-    Spot,
-    SpotCamIds,
-    image_response_to_cv2,
-)
 import cv2
-from cv_bridge import CvBridge
+import numpy as np
 import rospy
-from std_msgs.msg import String
+from cv_bridge import CvBridge
+from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import Image
+from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2
+from std_msgs.msg import String
 
 WEIGHTS_FILE = "/home/naoki/gt/spot/mask_rcnn_detectron2/weights/model_0007499.pth"
 VIZ_TOPIC = "/mask_rcnn_visualizations"
 DET_TOPIC = "/mask_rcnn_detections"
+HAND_COLOR_TOPIC = f"/spot_cams/{SpotCamIds.HAND_COLOR}"
 
 
 class MaskRcnnNode:
     def __init__(self, spot, weights=WEIGHTS_FILE, visualize=True):
         rospy.init_node("mask_rcnn_node")
         self.spot = spot
-        self.visualize = visualize 
+        self.visualize = visualize
         self.mri = MaskRcnnInference(weights, score_thresh=0.5)
 
         # For generating Image ROS msgs
         self.cv_bridge = CvBridge()
 
-        # Instantiate ROS topic publishers
+        # Instantiate ROS topic subscribers and publishers
+        rospy.Subscriber(HAND_COLOR_TOPIC, Image, self.hand_color_cb)
         self.viz_pub = rospy.Publisher(VIZ_TOPIC, Image, queue_size=5)
         self.det_pub = rospy.Publisher(DET_TOPIC, String, queue_size=5)
+        self.hand_color_img = np.zeros([256, 256, 3], dtype=np.uint8)
+
+    def hand_color_cb(self, msg):
+        self.hand_color_img = self.cv_bridge.imgmsg_to_cv2(msg, "bgr8")
 
     @staticmethod
     def format_detections(detections):
@@ -42,9 +45,7 @@ class MaskRcnnNode:
         return detection_str
 
     def publish_detection(self):
-        image_responses = self.spot.get_image_responses([SpotCamIds.HAND_COLOR])
-        img = image_response_to_cv2(image_responses[0])
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.cvtColor(self.hand_color_img, cv2.COLOR_BGR2RGB)
         pred = self.mri.inference(img)
 
         if len(pred["instances"]) > 0:
@@ -66,5 +67,5 @@ def main():
         mrn.publish_detection()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
