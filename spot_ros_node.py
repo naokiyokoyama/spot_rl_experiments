@@ -1,8 +1,12 @@
+import argparse
+import time
+
 import blosc
 import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Vector3
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
 from std_msgs.msg import ByteMultiArray
@@ -23,7 +27,7 @@ MAX_GRIPPER_DEPTH = 1.7
 
 class SpotRosPublisher:
     def __init__(self, spot):
-        rospy.init_node("spot_ros_node")
+        rospy.init_node("spot_ros_node", disable_signals=True)
         self.spot = spot
 
         # For generating Image ROS msgs
@@ -32,7 +36,7 @@ class SpotRosPublisher:
         # Instantiate raw image publishers
         self.sources = list(SRC2MSG.keys())
         self.img_pubs = [
-            rospy.Publisher(f"/spot_cams/{k}", v, queue_size=5)
+            rospy.Publisher(f"/spot_cams/{k}", v, queue_size=1)
             for k, v in SRC2MSG.items()
         ]
 
@@ -43,11 +47,16 @@ class SpotRosPublisher:
         )
         if self.filter_front_depth:
             self.filtered_front_depth_pub = rospy.Publisher(
-                FRONT_DEPTH_TOPIC, ByteMultiArray, queue_size=5
+                FRONT_DEPTH_TOPIC, ByteMultiArray, queue_size=1
             )
 
+        self.last_publish = time.time()
+        rospy.loginfo("[spot_ros_node]: Publishing has started.")
+
     def publish_msgs(self):
+        st = time.time()
         image_responses = self.spot.get_image_responses(self.sources, quality=100)
+        retrieval_time = time.time() - st
         # Publish raw images
         depth_eyes = {}
         for pub, src, response in zip(self.img_pubs, self.sources, image_responses):
@@ -88,6 +97,12 @@ class SpotRosPublisher:
             msg = ByteMultiArray(data=[i - 128 for i in msg])
             self.filtered_front_depth_pub.publish(msg)
 
+        rospy.loginfo(
+            f"[spot_ros_node]: Image retrieval / publish time: "
+            f"{1 / retrieval_time:.4f} / {1 / (time.time() - self.last_publish):.4f} Hz"
+        )
+        self.last_publish = time.time()
+
     @staticmethod
     def filter_depth(img, max_depth):
         img = scale_depth_img(img, max_depth=max_depth)
@@ -109,10 +124,34 @@ class SpotRosSubscriber:
         self.cv_bridge = CvBridge()
 
         # Instantiate subscribers
-        rospy.Subscriber(FRONT_DEPTH_TOPIC, ByteMultiArray, self.front_depth_callback)
-        rospy.Subscriber(HAND_DEPTH_TOPIC, ByteMultiArray, self.hand_depth_callback)
-        rospy.Subscriber(HAND_RGB_TOPIC, CompressedImage, self.hand_rgb_callback)
-        rospy.Subscriber(MASK_RCNN_VIZ_TOPIC, CompressedImage, self.viz_callback)
+        rospy.Subscriber(
+            FRONT_DEPTH_TOPIC,
+            ByteMultiArray,
+            self.front_depth_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            HAND_DEPTH_TOPIC,
+            ByteMultiArray,
+            self.hand_depth_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            HAND_RGB_TOPIC,
+            CompressedImage,
+            self.hand_rgb_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            MASK_RCNN_VIZ_TOPIC,
+            CompressedImage,
+            self.viz_callback,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
 
         # Conversion between CompressedImage and cv2
         self.cv_bridge = CvBridge()
@@ -160,11 +199,29 @@ class SpotRosSubscriber:
             return None
         return self.cv_bridge.compressed_imgmsg_to_cv2(self.hand_rgb)
 
-    @property
-    def front_depth_img(self):
-        if self.viz_callback is None:
-            return None
-        return self.cv_bridge.compressed_imgmsg_to_cv2(self.front_depth)
+
+class SpotRosProprioceptionPublisher:
+    def __init__(self, spot):
+        rospy.init_node("spot_ros_proprioception_node", disable_signals=True)
+        self.spot = spot
+
+        # Instantiate filtered image publishers
+        self.pub = rospy.Publisher(f"/x_y_yaw", Vector3, queue_size=1)
+        self.last_publish = time.time()
+        rospy.loginfo("[spot_ros_proprioception_node]: Publishing has started.")
+
+    def publish_msgs(self):
+        while time.time() - self.last_publish < 1 / 100:
+            # Limit to 100 Hz max
+            pass
+        st = time.time()
+        msg = Vector3(*self.spot.get_xy_yaw())
+        rospy.loginfo(
+            f"[spot_ros_proprioception_node]: Proprioception retrieval / publish time: "
+            f"{time.time() - st:.4f} / {1/(time.time() - self.last_publish):.4f} Hz"
+        )
+        self.pub.publish(msg)
+        self.last_publish = time.time()
 
 
 def decode_ros_blosc(msg: ByteMultiArray):
@@ -175,9 +232,19 @@ def decode_ros_blosc(msg: ByteMultiArray):
 
 
 def main():
-    spot = Spot("spot_ros_node")
-    srn = SpotRosPublisher(spot)
-    rospy.loginfo("[spot_ros_node]: Publishing has started.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--proprioception", action="store_true")
+    args = parser.parse_args()
+
+    if args.proprioception:
+        name = "spot_ros_proprioception_node"
+        cls = SpotRosProprioceptionPublisher
+    else:
+        name = "spot_ros_node"
+        cls = SpotRosPublisher
+
+    spot = Spot(name)
+    srn = cls(spot)
     while not rospy.is_shutdown():
         srn.publish_msgs()
 
