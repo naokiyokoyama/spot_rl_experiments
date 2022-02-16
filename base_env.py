@@ -2,46 +2,34 @@ import time
 
 import cv2
 import gym
+import magnum as mn
 import numpy as np
+import quaternion
 import rospy
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
-from spot_wrapper.spot import (
-    Spot,
-    SpotCamIds,
-    image_response_to_cv2,
-    scale_depth_img,
-    wrap_heading,
-)
+from spot_wrapper.spot import Spot, wrap_heading
 from spot_wrapper.utils import say
 from std_msgs.msg import String
 
-SPOT_IMAGE_SOURCES = [
-    SpotCamIds.FRONTLEFT_DEPTH,
-    SpotCamIds.FRONTRIGHT_DEPTH,
-    SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME,
-    SpotCamIds.HAND_COLOR,
-]
+from mask_rcnn_node import DETECTIONS_TOPIC
+from spot_ros_node import SpotRosSubscriber
 
-FRONT_DEPTH_TOPIC = "/spot_cams/filtered_front_depth"
-HAND_DEPTH_TOPIC = f"/spot_cams/{SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME}"
-DET_TOPIC = "/mask_rcnn_detections"
-
-CTRL_HZ = 4
+CTRL_HZ = 2
 MAX_EPISODE_STEPS = 100
+EE_GRIPPER_OFFSET = mn.Vector3(0.2, 0.0, 0.05)
 
 
 # Base action params
 MAX_LIN_VEL = 0.5  # m/s
 MAX_ANG_VEL = 0.523599  # 30 degrees/s, in radians
-VEL_TIME = 0.5
+VEL_TIME = 1 / CTRL_HZ
 
 # Arm action params
 MAX_JOINT_MOVEMENT = 0.0698132
-INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 75, 0])
+INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 60, 0])
 ARM_LOWER_LIMITS = np.deg2rad([-45, -180, 0, 0, -90, 0])
 ARM_UPPER_LIMITS = np.deg2rad([45, -45, 135, 0, 90, 0])
-JOINT_BLACKLIST = ["arm0.el0", "arm0.wr1"]  # joints we can't control
+# joints we can't control "arm0.el0", "arm0.wr1"
+JOINT_BLACKLIST = [2, 5]
 ACTUALLY_MOVE_ARM = True
 CENTER_TOLERANCE = 0.25
 
@@ -69,18 +57,13 @@ def rescale_actions(actions, action_thresh=0.05):
     return actions
 
 
-class SpotBaseEnv(gym.Env):
+class SpotBaseEnv(SpotRosSubscriber, gym.Env):
     def __init__(self, spot: Spot):
+        super().__init__("spot_reality_gym")
         self.spot = spot
 
         # ROS subscribers
-        rospy.init_node("spot_reality_gym", disable_signals=True)  # enable Ctrl + C
-        rospy.Subscriber(FRONT_DEPTH_TOPIC, Image, self.front_depth_cb)
-        rospy.Subscriber(HAND_DEPTH_TOPIC, Image, self.hand_depth_cb)
-        rospy.Subscriber(DET_TOPIC, String, self.detection_cb)
-        self.cv_bridge = CvBridge()
-        self.front_depth_img = None
-        self.hand_depth_img = None
+        rospy.Subscriber(DETECTIONS_TOPIC, String, self.detection_cb)
         self.detections = "None"
 
         # General environment parameters
@@ -109,18 +92,14 @@ class SpotBaseEnv(gym.Env):
         self.arm_lower_limits = ARM_LOWER_LIMITS
         self.arm_upper_limits = ARM_UPPER_LIMITS
         self.locked_on_object_count = 0
+        self.grasp_attempted = False
+        self.place_attempted = False
 
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
         spot.power_on()
         say("Standing up")
         spot.blocking_stand()
-
-    def front_depth_cb(self, msg):
-        self.front_depth_img = self.cv_bridge.imgmsg_to_cv2(msg, "mono8")
-
-    def hand_depth_cb(self, msg):
-        self.hand_depth_img = self.cv_bridge.imgmsg_to_cv2(msg, "mono8")
 
     def detection_cb(self, str_msg):
         self.detections = str_msg.data
@@ -130,9 +109,8 @@ class SpotBaseEnv(gym.Env):
         self.num_steps = 0
         self.reset_ran = True
         self.should_end = False
-
-        # Save latest position of each arm joint
-        self.get_arm_joints()
+        self.grasp_attempted = False
+        self.place_attempted = False
 
         observations = self.get_observations()
         return observations
@@ -148,7 +126,6 @@ class SpotBaseEnv(gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
         assert base_action is not None or arm_action is not None, "Must provide action."
-
         if grasp:
             print("GRASP ACTION CALLED: Grasping center object!")
             # The following cmd is blocking
@@ -158,9 +135,11 @@ class SpotBaseEnv(gym.Env):
                 positions=self.initial_arm_joint_angles, travel_time=1.0
             )
             self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
+            self.grasp_attempted = True
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
             self.spot.open_gripper()
+            self.place_attempted = True
         else:
             if base_action is not None:
                 # Command velocities using the input action
@@ -181,13 +160,12 @@ class SpotBaseEnv(gym.Env):
                 )
                 if self.actually_move_arm:
                     _ = self.spot.set_arm_joint_positions(
-                        positions=target_positions, travel_time=1 / self.ctrl_hz * 1.1
+                        positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
                     )
-
         # Pause until enough time has passed during this step
         while time.time() < self.last_execution + 1 / self.ctrl_hz:
             pass
-        print("Env Hz:", 1 / (time.time() - self.last_execution))
+        env_hz = 1 / (time.time() - self.last_execution)
         self.last_execution = time.time()
 
         observations = self.get_observations()
@@ -197,7 +175,9 @@ class SpotBaseEnv(gym.Env):
         done = timeout or self.get_success(observations) or self.should_end
 
         # Don't need reward or info
-        reward, info = None, {}
+        reward = None
+        info = {"env_hz": env_hz}
+
         return observations, reward, done, info
 
     @staticmethod
@@ -221,6 +201,7 @@ class SpotBaseEnv(gym.Env):
 
     def get_nav_observation(self, goal_xy, goal_heading):
         observations = {}
+
         # Get visual observations
         front_depth = cv2.resize(
             self.front_depth_img, (120 * 2, 212), interpolation=cv2.INTER_AREA
@@ -233,7 +214,6 @@ class SpotBaseEnv(gym.Env):
         )
 
         # Get rho theta observation
-        self.x, self.y, self.yaw = self.spot.get_xy_yaw()
         curr_xy = np.array([self.x, self.y], dtype=np.float32)
         rho = np.linalg.norm(curr_xy - goal_xy)
         theta = np.arctan2(goal_xy[1] - self.y, goal_xy[0] - self.x) - self.yaw
@@ -248,13 +228,11 @@ class SpotBaseEnv(gym.Env):
 
     def get_arm_joints(self):
         # Get proprioception inputs
-        arm_proprioception = self.spot.get_arm_proprioception().values()
-        self.current_arm_pose = np.array([j.position.value for j in arm_proprioception])
         joints = np.array(
             [
-                j.position.value
-                for j in arm_proprioception
-                if j.name not in JOINT_BLACKLIST
+                j
+                for idx, j in enumerate(self.current_arm_pose)
+                if idx not in JOINT_BLACKLIST
             ],
             dtype=np.float32,
         )
@@ -262,15 +240,7 @@ class SpotBaseEnv(gym.Env):
         return joints
 
     def get_gripper_images(self, target_obj_id):
-        image_responses = self.spot.get_image_responses(
-            [SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME]
-        )
-        raw_arm_depth = image_response_to_cv2(image_responses[0])
-        arm_depth = scale_depth_img(raw_arm_depth, max_depth=1.7)
-        arm_depth = cv2.resize(arm_depth, (320, 240))
-
-        # arm_depth = cv2.resize(self.hand_depth_img, (320, 240))
-
+        arm_depth = cv2.resize(self.hand_depth_img, (320, 240))
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
         arm_depth_bbox = self.get_mrcnn_det(target_obj_id)
 
@@ -333,3 +303,27 @@ class SpotBaseEnv(gym.Env):
 
     def should_end(self):
         return False
+
+    @staticmethod
+    def spot2habitat_transform(position, rotation):
+        x, y, z = position.x, position.y, position.z
+        qx, qy, qz, qw = rotation.x, rotation.y, rotation.z, rotation.w
+
+        quat = quaternion.quaternion(qw, qx, qy, qz)
+        rotation_matrix = mn.Quaternion(quat.imag, quat.real).to_matrix()
+        rotation_matrix_fixed = (
+            rotation_matrix
+            @ mn.Matrix4.rotation(
+                mn.Rad(-np.pi / 2.0), mn.Vector3(1.0, 0.0, 0.0)
+            ).rotation()
+        )
+        translation = mn.Vector3(x, z, -y)
+
+        quat_rotated = mn.Quaternion.from_matrix(rotation_matrix_fixed)
+        quat_rotated.vector = mn.Vector3(
+            quat_rotated.vector[0], quat_rotated.vector[2], -quat_rotated.vector[1]
+        )
+        rotation_matrix_fixed = quat_rotated.to_matrix()
+        sim_transform = mn.Matrix4.from_(rotation_matrix_fixed, translation)
+
+        return sim_transform

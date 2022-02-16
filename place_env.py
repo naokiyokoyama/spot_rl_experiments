@@ -6,8 +6,7 @@ from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
 from base_env import SpotBaseEnv
-from gaze_env import SpotGazeEnv
-from real_policy import PlacePolicy, spot2habitat_transform
+from real_policy import PlacePolicy
 
 CTRL_HZ = 1.0
 MAX_EPISODE_STEPS = 120
@@ -28,6 +27,7 @@ def main(spot):
         "weights/rel_place_energy_manual_seed10_ckpt.49.pth", device="cpu"
     )
     policy.reset()
+    print("Loaded policy!")
     observations = env.reset()
     done = False
     say("Starting episode")
@@ -66,44 +66,44 @@ class SpotPlaceEnv(SpotBaseEnv):
         self.placed = False
         return observations
 
-    def get_place_dist(self):
-        # The place goal should be provided relative to the local robot frame given that
-        # the robot is at the place receptacle
-
-        position, rotation = self.spot.get_base_transform_to("link_wr1")
-        wrist_T_base = spot2habitat_transform(position, rotation)
-        gripper_T_base = wrist_T_base @ mn.Matrix4.translation(EE_GRIPPER_OFFSET)
-        base_T_gripper = gripper_T_base.inverted()
-        gripper_pos = base_T_gripper.transform_point(self.place_target)
-
-        return gripper_pos
-
     def step(self, place=False, *args, **kwargs):
         place = self.place_attempts >= self.places_needed
-        if place:
-            self.placed = True
         return super().step(place=place, *args, **kwargs)
 
     def get_success(self, observations):
-        return self.placed
+        return self.place_attempted
 
     def get_observations(self):
         observations = {
             "joint": self.get_arm_joints(),
-            "obj_start_sensor": self.get_place_dist(),
+            "obj_start_sensor": self.get_place_dist(self.place_target),
         }
 
+        self.update_place_attempts(observations["joint"])
+
+        return observations
+
+    def update_place_attempts(self, curr_joints):
         if self.prev_joints is None or np.any(
-            np.abs(self.prev_joints - observations["joint"]) > np.deg2rad(1)
+            np.abs(self.prev_joints - curr_joints) > np.deg2rad(1)
         ):
             self.place_attempts = 0
         else:
             self.place_attempts += 1
-        print("self.place_attempts", self.place_attempts)
 
-        self.prev_joints = observations["joint"]
+        self.prev_joints = curr_joints
 
-        return observations
+    def get_place_dist(self, place_target):
+        # The place goal should be provided relative to the local robot frame given that
+        # the robot is at the place receptacle
+
+        position, rotation = self.spot.get_base_transform_to("link_wr1")
+        wrist_T_base = self.spot2habitat_transform(position, rotation)
+        gripper_T_base = wrist_T_base @ mn.Matrix4.translation(EE_GRIPPER_OFFSET)
+        base_T_gripper = gripper_T_base.inverted()
+        gripper_pos = base_T_gripper.transform_point(place_target)
+
+        return gripper_pos
 
 
 if __name__ == "__main__":
