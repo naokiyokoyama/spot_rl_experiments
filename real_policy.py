@@ -5,14 +5,6 @@ from gym.spaces import Dict as SpaceDict
 from habitat_baselines.rl.ppo.policy import PointNavBaselinePolicy
 from habitat_baselines.utils.common import batch_obs
 
-try:
-    import magnum as mn
-    import quaternion
-
-    magnum_imported = True
-except:
-    print("FAILED TO IMPORT MAGNUM. Place Env will not work.")
-    magnum_imported = False
 
 # Turn numpy observations into torch tensors for consumption by policy
 def to_tensor(v):
@@ -147,37 +139,6 @@ class NavPolicy(RealPolicy):
         # Linear, angular, and horizontal velocity (in that order)
         action_space = spaces.Box(-1.0, 1.0, (2,))
         super().__init__(checkpoint_path, observation_space, action_space, device)
-
-
-if magnum_imported:
-
-    def spot2habitat_transform(position, rotation):
-        x, y, z = position.x, position.y, position.z
-        qx, qy, qz, qw = rotation.x, rotation.y, rotation.z, rotation.w
-
-        quat = quaternion.quaternion(qw, qx, qy, qz)
-        rotation_matrix = mn.Quaternion(quat.imag, quat.real).to_matrix()
-        rotation_matrix_fixed = (
-            rotation_matrix
-            @ mn.Matrix4.rotation(
-                mn.Rad(-np.pi / 2.0), mn.Vector3(1.0, 0.0, 0.0)
-            ).rotation()
-        )
-        translation = mn.Vector3(x, z, -y)
-
-        quat_rotated = mn.Quaternion.from_matrix(rotation_matrix_fixed)
-        quat_rotated.vector = mn.Vector3(
-            quat_rotated.vector[0], quat_rotated.vector[2], -quat_rotated.vector[1]
-        )
-        rotation_matrix_fixed = quat_rotated.to_matrix()
-        sim_transform = mn.Matrix4.from_(rotation_matrix_fixed, translation)
-
-        return sim_transform
-
-else:
-
-    def spot2habitat_transform(*args, **kwargs):
-        raise NotImplementedError
 
 
 if __name__ == "__main__":
