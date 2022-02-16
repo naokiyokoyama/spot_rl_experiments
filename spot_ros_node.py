@@ -6,15 +6,15 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Vector3
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
-from std_msgs.msg import ByteMultiArray
+from std_msgs.msg import ByteMultiArray, Float32MultiArray
 
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
 FRONT_DEPTH_TOPIC = "/spot_cams/filtered_front_depth"
 HAND_DEPTH_TOPIC = f"/spot_cams/{SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME}"
 HAND_RGB_TOPIC = f"/spot_cams/{SpotCamIds.HAND_COLOR}"
+ROBOT_STATE_TOPIC = "/robot_state"
 SRC2MSG = {
     SpotCamIds.FRONTLEFT_DEPTH: ByteMultiArray,
     SpotCamIds.FRONTRIGHT_DEPTH: ByteMultiArray,
@@ -152,15 +152,25 @@ class SpotRosSubscriber:
             queue_size=1,
             buff_size=2 ** 24,
         )
+        rospy.Subscriber(
+            ROBOT_STATE_TOPIC,
+            Float32MultiArray,
+            self.robot_state_callback,
+            queue_size=1,
+        )
 
         # Conversion between CompressedImage and cv2
         self.cv_bridge = CvBridge()
 
-        # Image holders
+        # Msg holders
         self.front_depth = None
         self.hand_depth = None
         self.hand_rgb = None
         self.det = None
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+        self.current_arm_pose = None
 
         self.updated = False
         rospy.loginfo(f"[{node_name}]: Subscribing has started.")
@@ -180,6 +190,10 @@ class SpotRosSubscriber:
     def viz_callback(self, msg):
         self.det = msg
         self.updated = True
+
+    def robot_state_callback(self, msg):
+        self.x, self.y, self.yaw = msg.data[:3]
+        self.current_arm_pose = msg.data[3:]
 
     @property
     def front_depth_img(self):
@@ -206,7 +220,7 @@ class SpotRosProprioceptionPublisher:
         self.spot = spot
 
         # Instantiate filtered image publishers
-        self.pub = rospy.Publisher(f"/x_y_yaw", Vector3, queue_size=1)
+        self.pub = rospy.Publisher(ROBOT_STATE_TOPIC, Float32MultiArray, queue_size=1)
         self.last_publish = time.time()
         rospy.loginfo("[spot_ros_proprioception_node]: Publishing has started.")
 
@@ -215,10 +229,17 @@ class SpotRosProprioceptionPublisher:
             # Limit to 100 Hz max
             pass
         st = time.time()
-        msg = Vector3(*self.spot.get_xy_yaw())
+        robot_state = self.spot.get_robot_state()
         rospy.loginfo(
             f"[spot_ros_proprioception_node]: Proprioception retrieval / publish time: "
-            f"{time.time() - st:.4f} / {1/(time.time() - self.last_publish):.4f} Hz"
+            f"{1/(time.time() - st):.4f} / {1/(time.time() - self.last_publish):.4f} Hz"
+        )
+        msg = Float32MultiArray()
+        xy_yaw = self.spot.get_xy_yaw(robot_state=robot_state)
+        joints = self.spot.get_arm_proprioception(robot_state=robot_state).values()
+        msg.data = np.array(
+            list(xy_yaw) + [j.position.value for j in joints],
+            dtype=np.float32,
         )
         self.pub.publish(msg)
         self.last_publish = time.time()
