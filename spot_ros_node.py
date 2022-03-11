@@ -8,12 +8,15 @@ import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
-from std_msgs.msg import ByteMultiArray, Float32MultiArray
+from std_msgs.msg import (
+    ByteMultiArray,
+    Float32MultiArray,
+    MultiArrayDimension,
+    MultiArrayLayout,
+)
 
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
-FRONT_DEPTH_TOPIC = "/spot_cams/filtered_front_depth"
-HAND_DEPTH_TOPIC = f"/spot_cams/{SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME}"
-HAND_RGB_TOPIC = f"/spot_cams/{SpotCamIds.HAND_COLOR}"
+COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"
 ROBOT_STATE_TOPIC = "/robot_state"
 SRC2MSG = {
     SpotCamIds.FRONTLEFT_DEPTH: ByteMultiArray,
@@ -35,20 +38,9 @@ class SpotRosPublisher:
 
         # Instantiate raw image publishers
         self.sources = list(SRC2MSG.keys())
-        self.img_pubs = [
-            rospy.Publisher(f"/spot_cams/{k}", v, queue_size=1)
-            for k, v in SRC2MSG.items()
-        ]
-
-        # Instantiate filtered image publishers
-        self.filter_front_depth = (
-            SpotCamIds.FRONTLEFT_DEPTH in self.sources
-            and SpotCamIds.FRONTRIGHT_DEPTH in self.sources
+        self.img_pub = rospy.Publisher(
+            COMPRESSED_IMAGES_TOPIC, ByteMultiArray, queue_size=1
         )
-        if self.filter_front_depth:
-            self.filtered_front_depth_pub = rospy.Publisher(
-                FRONT_DEPTH_TOPIC, ByteMultiArray, queue_size=1
-            )
 
         self.last_publish = time.time()
         rospy.loginfo("[spot_ros_node]: Publishing has started.")
@@ -58,44 +50,48 @@ class SpotRosPublisher:
         image_responses = self.spot.get_image_responses(self.sources, quality=100)
         retrieval_time = time.time() - st
         # Publish raw images
-        depth_eyes = {}
-        for pub, src, response in zip(self.img_pubs, self.sources, image_responses):
+        src2details = {}
+        for src, response in zip(self.sources, image_responses):
             img = image_response_to_cv2(response)
 
-            # Publish filtered front depth images later
-            if (
-                src in [SpotCamIds.FRONTRIGHT_DEPTH, SpotCamIds.FRONTLEFT_DEPTH]
-                and self.filter_front_depth
-            ):
-                depth_eyes[src] = img
-                continue  # Skip publishing now if we are filtering first
-            elif src == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME:
-                img = scale_depth_img(img, max_depth=MAX_GRIPPER_DEPTH)
+            if "depth" in src:
+                # Rescale depth images here
+                if src == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME:
+                    max_depth = MAX_GRIPPER_DEPTH
+                else:
+                    max_depth = MAX_DEPTH
+                img = scale_depth_img(img, max_depth=max_depth)
                 img = np.uint8(img * 255.0)
-
-            if src == SpotCamIds.HAND_COLOR:
-                msg = self.cv_bridge.cv2_to_compressed_imgmsg(img)
-            else:
-                # img must be uint8 image
-                msg = blosc.pack_array(
-                    img, cname="zstd", clevel=1, shuffle=blosc.NOSHUFFLE
+                img_bytes = blosc.pack_array(
+                    img, cname="zstd", clevel=3, shuffle=blosc.NOSHUFFLE
                 )
-                msg = ByteMultiArray(data=[i - 128 for i in msg])
+            else:
+                # RGB should be JPEG compressed instead of using blosc
+                img_bytes = np.array(cv2.imencode(".jpg", img)[1])
+                img_bytes = (img_bytes.astype(int) - 128).astype(np.int8)
+            src2details[src] = {
+                "dims": MultiArrayDimension(label=src, size=len(img_bytes)),
+                "bytes": img_bytes,
+            }
 
-            pub.publish(msg)
+        depth_bytes = b""
+        rgb_bytes = []
+        depth_dims = []
+        rgb_dims = []
+        for k, v in src2details.items():
+            if "depth" in k:
+                depth_bytes += v["bytes"]
+                depth_dims.append(v["dims"])
+            else:
+                rgb_bytes.append(v["bytes"])
+                rgb_dims.append(v["dims"])
+        depth_bytes = np.frombuffer(depth_bytes, dtype=np.uint8)
+        depth_bytes = depth_bytes.astype(int) - 128
+        bytes_data = np.concatenate([depth_bytes, *rgb_bytes])
+        dims = depth_dims + rgb_dims
 
-        # Filter and publish
-        if self.filter_front_depth:
-            # Merge
-            d_keys = [SpotCamIds.FRONTRIGHT_DEPTH, SpotCamIds.FRONTLEFT_DEPTH]
-            merged = np.hstack([depth_eyes[d] for d in d_keys])
-            # Filter
-            merged = self.filter_depth(merged, MAX_DEPTH)
-            msg = blosc.pack_array(
-                merged, cname="zstd", clevel=1, shuffle=blosc.NOSHUFFLE
-            )
-            msg = ByteMultiArray(data=[i - 128 for i in msg])
-            self.filtered_front_depth_pub.publish(msg)
+        msg = ByteMultiArray(layout=MultiArrayLayout(dim=dims), data=bytes_data)
+        self.img_pub.publish(msg)
 
         rospy.loginfo(
             f"[spot_ros_node]: Image retrieval / publish time: "
@@ -125,25 +121,11 @@ class SpotRosSubscriber:
 
         # Instantiate subscribers
         rospy.Subscriber(
-            FRONT_DEPTH_TOPIC,
+            COMPRESSED_IMAGES_TOPIC,
             ByteMultiArray,
-            self.front_depth_callback,
+            self.compressed_callback,
             queue_size=1,
-            buff_size=2 ** 24,
-        )
-        rospy.Subscriber(
-            HAND_DEPTH_TOPIC,
-            ByteMultiArray,
-            self.hand_depth_callback,
-            queue_size=1,
-            buff_size=2 ** 24,
-        )
-        rospy.Subscriber(
-            HAND_RGB_TOPIC,
-            CompressedImage,
-            self.hand_rgb_callback,
-            queue_size=1,
-            buff_size=2 ** 24,
+            buff_size=2 ** 30,
         )
         rospy.Subscriber(
             MASK_RCNN_VIZ_TOPIC,
@@ -163,6 +145,7 @@ class SpotRosSubscriber:
         self.cv_bridge = CvBridge()
 
         # Msg holders
+        self.compressed_imgs_msg = None
         self.front_depth = None
         self.hand_depth = None
         self.hand_rgb = None
@@ -171,21 +154,47 @@ class SpotRosSubscriber:
         self.y = 0.0
         self.yaw = 0.0
         self.current_arm_pose = None
+        self.lock = False
 
         self.updated = False
         rospy.loginfo(f"[{node_name}]: Subscribing has started.")
 
-    def front_depth_callback(self, msg):
-        self.front_depth = msg
+    def compressed_callback(self, msg):
+        if self.lock:
+            return
+        self.compressed_imgs_msg = msg
         self.updated = True
 
-    def hand_depth_callback(self, msg):
-        self.hand_depth = msg
-        self.updated = True
+    def decompress_imgs(self):
+        assert self.compressed_imgs_msg is not None, "No compressed imgs received!"
+        self.lock = True
+        byte_data = (np.array(self.compressed_imgs_msg.data) + 128).astype(np.uint8)
+        size_and_labels = [
+            (int(dim.size), str(dim.label))
+            for dim in self.compressed_imgs_msg.layout.dim
+        ]
+        self.lock = False
+        start = 0
+        eyes = {}
+        for size, label in size_and_labels:
+            end = start + size
+            if "depth" in label:
+                img = blosc.unpack_array(byte_data[start:end].tobytes())
+            else:
+                rgb_bytes = byte_data[start:end]
+                img = cv2.imdecode(rgb_bytes, cv2.IMREAD_COLOR)
+            if label == SpotCamIds.FRONTLEFT_DEPTH:
+                eyes["left"] = img
+            elif label == SpotCamIds.FRONTRIGHT_DEPTH:
+                eyes["right"] = img
+            elif label == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME:
+                self.hand_depth = img
+            elif label == SpotCamIds.HAND_COLOR:
+                self.hand_rgb = img
+            start += size
 
-    def hand_rgb_callback(self, msg):
-        self.hand_rgb = msg
-        self.updated = True
+        if len(eyes) == 2:
+            self.front_depth = np.hstack([eyes["right"], eyes["left"]])
 
     def viz_callback(self, msg):
         self.det = msg
@@ -225,8 +234,8 @@ class SpotRosProprioceptionPublisher:
         rospy.loginfo("[spot_ros_proprioception_node]: Publishing has started.")
 
     def publish_msgs(self):
-        while time.time() - self.last_publish < 1 / 100:
-            # Limit to 100 Hz max
+        while time.time() - self.last_publish < 1 / 60:
+            # Limit to 60 Hz max
             pass
         st = time.time()
         robot_state = self.spot.get_robot_state()
@@ -243,13 +252,6 @@ class SpotRosProprioceptionPublisher:
         )
         self.pub.publish(msg)
         self.last_publish = time.time()
-
-
-def decode_ros_blosc(msg: ByteMultiArray):
-    byte_data = msg.data
-    byte_data = [(i + 128).to_bytes(1, "big") for i in byte_data]
-    decoded = blosc.unpack_array(b"".join(byte_data))
-    return decoded
 
 
 def main():

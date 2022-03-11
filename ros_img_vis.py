@@ -4,11 +4,9 @@ from collections import deque
 import cv2
 import numpy as np
 import rospy
-from sensor_msgs.msg import CompressedImage
 from spot_wrapper.utils import resize_to_tallest
-from std_msgs.msg import ByteMultiArray
 
-from spot_ros_node import SpotRosSubscriber, decode_ros_blosc
+from spot_ros_node import SpotRosSubscriber
 
 
 class SpotRosVisualizer(SpotRosSubscriber):
@@ -23,14 +21,12 @@ class SpotRosVisualizer(SpotRosSubscriber):
             return
 
         # Gather latest images
+        self.decompress_imgs()
         msgs = [self.front_depth, self.hand_depth, self.hand_rgb, self.det]
-        imgs = []
-        for msg in msgs:
-            if isinstance(msg, ByteMultiArray):
-                mono_channel_img = decode_ros_blosc(msg)
-                imgs.append(cv2.cvtColor(mono_channel_img, cv2.COLOR_GRAY2BGR))
-            elif isinstance(msg, CompressedImage):
-                imgs.append(self.cv_bridge.compressed_imgmsg_to_cv2(msg))
+        imgs = [i for i in msgs if i is not None]
+        imgs = [
+            i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR) for i in imgs
+        ]
 
         # Make sure all imgs are same height
         img = resize_to_tallest(imgs, hstack=True)
