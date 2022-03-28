@@ -27,6 +27,8 @@ SRC2MSG = {
 MAX_DEPTH = 3.5
 MAX_GRIPPER_DEPTH = 1.7
 
+NAV_POSE_BUFFER_LEN = 50
+
 
 class SpotRosPublisher:
     def __init__(self, spot):
@@ -204,24 +206,6 @@ class SpotRosSubscriber:
         self.x, self.y, self.yaw = msg.data[:3]
         self.current_arm_pose = msg.data[3:]
 
-    @property
-    def front_depth_img(self):
-        if self.front_depth is None:
-            return None
-        return decode_ros_blosc(self.front_depth)
-
-    @property
-    def hand_depth_img(self):
-        if self.hand_depth is None:
-            return None
-        return decode_ros_blosc(self.hand_depth)
-
-    @property
-    def hand_rgb_img(self):
-        if self.hand_rgb is None:
-            return None
-        return self.cv_bridge.compressed_imgmsg_to_cv2(self.hand_rgb)
-
 
 class SpotRosProprioceptionPublisher:
     def __init__(self, spot):
@@ -233,25 +217,37 @@ class SpotRosProprioceptionPublisher:
         self.last_publish = time.time()
         rospy.loginfo("[spot_ros_proprioception_node]: Publishing has started.")
 
+        self.nav_pose_buff = None
+        self.buff_idx = 0
+
     def publish_msgs(self):
-        while time.time() - self.last_publish < 1 / 60:
-            # Limit to 60 Hz max
-            pass
         st = time.time()
         robot_state = self.spot.get_robot_state()
-        rospy.loginfo(
-            f"[spot_ros_proprioception_node]: Proprioception retrieval / publish time: "
-            f"{1/(time.time() - st):.4f} / {1/(time.time() - self.last_publish):.4f} Hz"
-        )
         msg = Float32MultiArray()
         xy_yaw = self.spot.get_xy_yaw(robot_state=robot_state)
+        if self.nav_pose_buff is None:
+            self.nav_pose_buff = np.tile(xy_yaw, [NAV_POSE_BUFFER_LEN, 1])
+        else:
+            self.nav_pose_buff[self.buff_idx] = xy_yaw
+        self.buff_idx = (self.buff_idx + 1) % NAV_POSE_BUFFER_LEN
+        xy_yaw = np.mean(self.nav_pose_buff, axis=0)
+
         joints = self.spot.get_arm_proprioception(robot_state=robot_state).values()
         msg.data = np.array(
             list(xy_yaw) + [j.position.value for j in joints],
             dtype=np.float32,
         )
-        self.pub.publish(msg)
-        self.last_publish = time.time()
+
+        # Limit publishing to 60 Hz max
+        if time.time() - self.last_publish > 1 / 60:
+            self.pub.publish(msg)
+            rospy.loginfo(
+                f"[spot_ros_proprioception_node]: "
+                "Proprioception retrieval / publish time: "
+                f"{1/(time.time() - st):.4f} / "
+                f"{1/(time.time() - self.last_publish):.4f} Hz"
+            )
+            self.last_publish = time.time()
 
 
 def main():
