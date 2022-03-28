@@ -5,15 +5,15 @@ import gym
 import magnum as mn
 import numpy as np
 import quaternion
-import rospy
+from mask_rcnn_detectron2.inference import MaskRcnnInference
 from spot_wrapper.spot import Spot, wrap_heading
 from spot_wrapper.utils import say
-from std_msgs.msg import String
 
-from mask_rcnn_node import DETECTIONS_TOPIC
+from depth_map_utils import fill_in_fast, fill_in_multiscale
 from spot_ros_node import SpotRosSubscriber
 
 CTRL_HZ = 2
+# CTRL_HZ = 1
 MAX_EPISODE_STEPS = 100
 EE_GRIPPER_OFFSET = mn.Vector3(0.2, 0.0, 0.05)
 
@@ -25,7 +25,7 @@ VEL_TIME = 1 / CTRL_HZ
 
 # Arm action params
 MAX_JOINT_MOVEMENT = 0.0698132
-INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 60, 0])
+INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 75, 0])
 ARM_LOWER_LIMITS = np.deg2rad([-45, -180, 0, 0, -90, 0])
 ARM_UPPER_LIMITS = np.deg2rad([45, -45, 135, 0, 90, 0])
 # joints we can't control "arm0.el0", "arm0.wr1"
@@ -58,13 +58,9 @@ def rescale_actions(actions, action_thresh=0.05):
 
 
 class SpotBaseEnv(SpotRosSubscriber, gym.Env):
-    def __init__(self, spot: Spot):
+    def __init__(self, spot: Spot, mask_rcnn_weights=None):
         super().__init__("spot_reality_gym")
         self.spot = spot
-
-        # ROS subscribers
-        rospy.Subscriber(DETECTIONS_TOPIC, String, self.detection_cb)
-        self.detections = "None"
 
         # General environment parameters
         self.ctrl_hz = CTRL_HZ
@@ -95,14 +91,17 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.grasp_attempted = False
         self.place_attempted = False
 
+        # Mask RCNN
+        if mask_rcnn_weights is not None:
+            self.mrcnn = MaskRcnnInference(mask_rcnn_weights, score_thresh=0.5)
+        else:
+            self.mrcnn = None
+
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
         spot.power_on()
         say("Standing up")
         spot.blocking_stand()
-
-    def detection_cb(self, str_msg):
-        self.detections = str_msg.data
 
     def reset(self, *args, **kwargs):
         # Reset parameters
@@ -112,6 +111,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.grasp_attempted = False
         self.place_attempted = False
 
+        self.decompress_imgs()
         observations = self.get_observations()
         return observations
 
@@ -160,7 +160,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 )
                 if self.actually_move_arm:
                     _ = self.spot.set_arm_joint_positions(
-                        positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
+                        positions=target_positions, travel_time=1 / self.ctrl_hz
                     )
         # Pause until enough time has passed during this step
         while time.time() < self.last_execution + 1 / self.ctrl_hz:
@@ -168,6 +168,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         env_hz = 1 / (time.time() - self.last_execution)
         self.last_execution = time.time()
 
+        self.decompress_imgs()
         observations = self.get_observations()
 
         self.num_steps += 1
@@ -203,13 +204,28 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         observations = {}
 
         # Get visual observations
+        st = time.time()
+        # front_depth = (
+        #     fill_in_fast(self.front_depth.copy().astype(np.float32) * (3.5 / 255.0))
+        #     * (255.0 / 3.5)
+        # ).astype(np.uint8)
+        front_depth = (
+            fill_in_multiscale(
+                self.front_depth.copy().astype(np.float32) * (3.5 / 255.0)
+            )[0]
+            * (255.0 / 3.5)
+        ).astype(np.uint8)
+
+        # front_depth = self.filter_depth(front_depth)
+        print("Filter time", time.time() - st)
+
         front_depth = cv2.resize(
-            self.front_depth_img, (120 * 2, 212), interpolation=cv2.INTER_AREA
+            front_depth, (120 * 2, 212), interpolation=cv2.INTER_AREA
         )
         front_depth = np.float32(front_depth) / 255.0
         # Add dimension for channel (unsqueeze)
         front_depth = front_depth.reshape(*front_depth.shape[:2], 1)
-        observations["spot_left_depth"], observations["spot_right_depth"] = np.split(
+        observations["spot_right_depth"], observations["spot_left_depth"] = np.split(
             front_depth, 2, 1
         )
 
@@ -239,25 +255,48 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         return joints
 
+    @staticmethod
+    def filter_depth(depth_img):
+        for _ in range(5):
+            filtered = cv2.medianBlur(depth_img, 19)
+            filtered[depth_img > 0] = depth_img[depth_img > 0]
+            depth_img = filtered
+        return depth_img
+
     def get_gripper_images(self, target_obj_id):
-        arm_depth = cv2.resize(self.hand_depth_img, (320, 240))
-        arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
+        arm_depth = self.hand_depth.copy()
         arm_depth_bbox = self.get_mrcnn_det(target_obj_id)
+
+        # Blur
+        arm_depth = self.filter_depth(arm_depth)
+        arm_depth = cv2.resize(arm_depth, (320, 240))
+        arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
+
+        # Normalize
+        arm_depth = np.float32(arm_depth) / 255.0
+        arm_depth[arm_depth < 0.04] = 0.0
 
         return arm_depth, arm_depth_bbox
 
     def get_mrcnn_det(self, target_obj_id):
         arm_depth_bbox = np.zeros([240, 320, 1], dtype=np.float32)
-        if self.detections == "None":
+        img = cv2.cvtColor(self.hand_rgb, cv2.COLOR_BGR2RGB)
+        pred = self.mrcnn.inference(img)
+
+        if len(pred["instances"]) > 0:
+            det_str = self.format_detections(pred["instances"])
+            print("[mask_rcnn]: " + det_str)
+        else:
+            det_str = "None"
+
+        if det_str == "None":
             return arm_depth_bbox
 
         # Check if desired object is in view of camera
         def correct_class(detection):
             return int(detection.split(",")[0]) == target_obj_id
 
-        matching_detections = [
-            d for d in self.detections.split(";") if correct_class(d)
-        ]
+        matching_detections = [d for d in det_str.split(";") if correct_class(d)]
         if not matching_detections:
             return arm_depth_bbox
 
@@ -294,6 +333,18 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             self.locked_on_object_count = 0
 
         return arm_depth_bbox
+
+    @staticmethod
+    def format_detections(detections):
+        detection_str = []
+        for det_idx in range(len(detections)):
+            class_id = detections.pred_classes[det_idx]
+            score = detections.scores[det_idx]
+            x1, y1, x2, y2 = detections.pred_boxes[det_idx].tensor.squeeze(0)
+            det_attrs = [str(i.item()) for i in [class_id, score, x1, y1, x2, y2]]
+            detection_str.append(",".join(det_attrs))
+        detection_str = ";".join(detection_str)
+        return detection_str
 
     def get_observations(self):
         raise NotImplementedError
