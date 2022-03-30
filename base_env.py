@@ -128,6 +128,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             print("GRASP ACTION CALLED: Grasping center object!")
             # The following cmd is blocking
             self.spot.grasp_center_of_hand_depth()
+
+            # Just leave the object on the receptacle if desired
+            if self.config.DONT_PICK_UP:
+                self.spot.open_gripper()
+
             # Return to pre-grasp joint positions after grasp
             cmd_id = self.spot.set_arm_joint_positions(
                 positions=self.initial_arm_joint_angles, travel_time=1.0
