@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import torch.cuda
+import yaml
 from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
@@ -11,7 +12,7 @@ from real_policy import NavPolicy
 
 SUCCESS_DISTANCE = 0.3
 SUCCESS_ANGLE_DIST = 0.0872665  # 5 radians
-NAV_WEIGHTS = "weights/two_cams_with_noise_seed4_ckpt.4.pth"
+NAV_WEIGHTS = "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
 GOAL_XY = [6, 0]
 GOAL_HEADING = 90  # positive direction is CCW
 GOAL_AS_STR = ",".join([str(i) for i in GOAL_XY]) + f",{GOAL_HEADING}"
@@ -20,6 +21,8 @@ GOAL_AS_STR = ",".join([str(i) for i in GOAL_XY]) + f",{GOAL_HEADING}"
 def main(spot):
     parser = argparse.ArgumentParser()
     parser.add_argument("-g", "--goal", default=GOAL_AS_STR)
+    parser.add_argument("-w", "--waypoint")
+    parser.add_argument("-d", "--dock", action="store_true")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -27,7 +30,12 @@ def main(spot):
     policy.reset()
 
     env = SpotNavEnv(spot)
-    goal_x, goal_y, goal_heading = [float(i) for i in args.goal.split(",")]
+    if args.waypoint is not None:
+        with open("waypoints.yaml") as f:
+            waypoints = yaml.safe_load(f)
+        goal_x, goal_y, goal_heading = waypoints[args.waypoint]
+    else:
+        goal_x, goal_y, goal_heading = [float(i) for i in args.goal.split(",")]
     observations = env.reset((goal_x, goal_y), np.deg2rad(goal_heading))
     done = False
     say("Starting episode")
@@ -37,7 +45,9 @@ def main(spot):
             action = policy.act(observations)
             observations, _, done, _ = env.step(base_action=action)
         say("Environment is done.")
-        time.sleep(20)
+        if args.dock:
+            say("Docking robot")
+            spot.dock(520)
     finally:
         spot.power_off()
 

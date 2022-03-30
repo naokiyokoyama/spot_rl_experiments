@@ -1,10 +1,8 @@
 import time
 
-import cv2
 import magnum as mn
 import numpy as np
-import torch
-from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
+from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
 from base_env import SpotBaseEnv
@@ -15,20 +13,20 @@ from real_policy import GazePolicy, NavPolicy, PlacePolicy
 TARGET_OBJ_ID = 3
 SUCCESS_DISTANCE = 0.2
 SUCCESS_ANGLE_DIST = np.deg2rad(5)
-OBJECT_LOCK_ON_NEEDED = 3
+OBJECT_LOCK_ON_NEEDED = 2
 PLACES_NEEDED = 3
-PLACE_TARGET = mn.Vector3(0.75, 0.25, 0.25)
+PLACE_TARGET = mn.Vector3(1.03, -0.22, 0.37)
 GAZE_DESTINATION = [
     (4.558099926809142, 1.9298394486256936),
     np.deg2rad(90.0),
 ]
 PLACE_DESTINATION = [
-    (3.448517655469832, -1.856852836155422),
-    np.deg2rad(90.0),
+    (3.5124963425520868, -1.8734770435783519),
+    np.deg2rad(-87.77534964347153),
 ]
 
 NAV_WEIGHTS = "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
-GAZE_WEIGHTS = "weights/closer_seed2_speed0.0872665_1648513206.ckpt.14.pth"
+GAZE_WEIGHTS = "weights/speed_seed1_speed0.0872665_1648513272.ckpt.19.pth"
 PLACE_WEIGHTS = "weights/rel_place_energy_manual_seed10_ckpt.49.pth"
 MASK_RCNN_WEIGHTS = "weights/model_0007499.pth"
 
@@ -157,7 +155,10 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
     def get_observations(self):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
         observations.update(super().get_observations())
-        observations["obj_start_sensor"] = self.get_place_dist(self.place_target)
+        observations["obj_start_sensor"] = self.get_place_dist(
+            self.place_target,
+            place_nav_targ=[*PLACE_DESTINATION[0], PLACE_DESTINATION[-1]],
+        )
 
         SpotPlaceEnv.update_place_attempts(self, observations["joint"])
 

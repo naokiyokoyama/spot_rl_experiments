@@ -19,6 +19,7 @@ EE_GRIPPER_OFFSET = mn.Vector3(0.2, 0.0, 0.05)
 # PLACE_TARGET = mn.Vector3(1.2, 0.58, -0.55)
 PLACE_TARGET = mn.Vector3(0.75, 0.25, 0.25)
 PLACES_NEEDED = 3
+PLACE_NAV_TARGET = [7.934866519737901, -2.18845070377417, -90]
 
 
 def main(spot):
@@ -31,7 +32,6 @@ def main(spot):
     observations = env.reset()
     done = False
     say("Starting episode")
-    time.sleep(2)
     try:
         while not done:
             action = policy.act(observations)
@@ -76,7 +76,9 @@ class SpotPlaceEnv(SpotBaseEnv):
     def get_observations(self):
         observations = {
             "joint": self.get_arm_joints(),
-            "obj_start_sensor": self.get_place_dist(self.place_target),
+            "obj_start_sensor": self.get_place_dist(
+                self.place_target, place_nav_targ=PLACE_NAV_TARGET
+            ),
         }
 
         self.update_place_attempts(observations["joint"])
@@ -93,7 +95,7 @@ class SpotPlaceEnv(SpotBaseEnv):
 
         self.prev_joints = curr_joints
 
-    def get_place_dist(self, place_target):
+    def get_place_dist(self, place_target, place_nav_targ=None):
         # The place goal should be provided relative to the local robot frame given that
         # the robot is at the place receptacle
 
@@ -101,7 +103,19 @@ class SpotPlaceEnv(SpotBaseEnv):
         wrist_T_base = self.spot2habitat_transform(position, rotation)
         gripper_T_base = wrist_T_base @ mn.Matrix4.translation(EE_GRIPPER_OFFSET)
         base_T_gripper = gripper_T_base.inverted()
-        gripper_pos = base_T_gripper.transform_point(place_target)
+        if place_nav_targ is None:
+            hab_place_target = self.spot2habitat_translation(place_target)
+        else:
+            navtarg_T_global = mn.Matrix4.from_(
+                mn.Matrix4.rotation_z(mn.Rad(place_nav_targ[2])).rotation(),
+                mn.Vector3(mn.Vector3(*place_nav_targ[:2], 0.5)),
+            )
+            global_place_target = navtarg_T_global.transform_point(place_target)
+            global_T_local = self.curr_transform.inverted()
+            local_place_target = global_T_local.transform_point(global_place_target)
+            local_place_target[1] *= -1  # Still not sure why this is necessary
+            hab_place_target = self.spot2habitat_translation(local_place_target)
+        gripper_pos = base_T_gripper.transform_point(hab_place_target)
 
         return gripper_pos
 

@@ -9,17 +9,19 @@ from base_env import SpotBaseEnv
 from real_policy import GazePolicy
 
 OBJECT_LOCK_ON_NEEDED = 3
-ACTUALLY_GRASP = True
-ACTUALLY_MOVE_ARM = True
 
+MASK_RCNN_WEIGHTS = "weights/model_0007499.pth"
 TARGET_OBJ_ID = 3  # rubiks cube
 DEBUG = False
 
 
 def main(spot):
-    env = SpotGazeEnv(spot)
+    env = SpotGazeEnv(spot, mask_rcnn_weights=MASK_RCNN_WEIGHTS)
     print("Loading policy...")
-    policy = GazePolicy("weights/real_depth_gaze_seed1_49.pth", device="cuda:0")
+    policy = GazePolicy(
+        "weights/speed_seed1_speed0.0872665_1648513272.ckpt.19.pth",
+        device="cuda:0",
+    )
     print("Resetting policy")
     policy.reset()
     print("Resetting Env")
@@ -39,8 +41,8 @@ def main(spot):
 
 
 class SpotGazeEnv(SpotBaseEnv):
-    def __init__(self, spot: Spot):
-        super().__init__(spot)
+    def __init__(self, spot: Spot, **kwargs):
+        super().__init__(spot, **kwargs)
 
         self.locked_on_object_count = 0
         self.target_obj_id = TARGET_OBJ_ID
@@ -65,7 +67,6 @@ class SpotGazeEnv(SpotBaseEnv):
     def step(self, base_action=None, arm_action=None, grasp=False, place=False):
         if self.locked_on_object_count == OBJECT_LOCK_ON_NEEDED:
             grasp = True
-            self.should_end = True
 
         observations, reward, done, info = super().step(
             base_action, arm_action, grasp, place
@@ -89,7 +90,7 @@ class SpotGazeEnv(SpotBaseEnv):
         return observations
 
     def get_success(self, observations):
-        return self.should_end
+        return self.grasp_attempted
 
 
 if __name__ == "__main__":

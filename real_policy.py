@@ -86,10 +86,10 @@ class GazePolicy(RealPolicy):
         observation_space = SpaceDict(
             {
                 "arm_depth": spaces.Box(
-                    low=0.0, high=1.0, shape=(240, 320, 1), dtype=np.float32
+                    low=0.0, high=1.0, shape=(240, 228, 1), dtype=np.float32
                 ),
                 "arm_depth_bbox": spaces.Box(
-                    low=0.0, high=1.0, shape=(240, 320, 1), dtype=np.float32
+                    low=0.0, high=1.0, shape=(240, 228, 1), dtype=np.float32
                 ),
                 "joint": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
                 "is_holding": spaces.Box(

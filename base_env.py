@@ -10,7 +10,7 @@ from spot_wrapper.spot import Spot, wrap_heading
 from spot_wrapper.utils import say
 
 from depth_map_utils import fill_in_fast, fill_in_multiscale
-from spot_ros_node import SpotRosSubscriber
+from spot_ros_node import MAX_DEPTH, MAX_GRIPPER_DEPTH, SpotRosSubscriber
 
 CTRL_HZ = 2
 # CTRL_HZ = 1
@@ -27,7 +27,7 @@ VEL_TIME = 1 / CTRL_HZ
 MAX_JOINT_MOVEMENT = 0.0698132
 INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 75, 0])
 ARM_LOWER_LIMITS = np.deg2rad([-45, -180, 0, 0, -90, 0])
-ARM_UPPER_LIMITS = np.deg2rad([45, -45, 135, 0, 90, 0])
+ARM_UPPER_LIMITS = np.deg2rad([45, -45, 180, 0, 90, 0])
 # joints we can't control "arm0.el0", "arm0.wr1"
 JOINT_BLACKLIST = [2, 5]
 ACTUALLY_MOVE_ARM = True
@@ -58,7 +58,7 @@ def rescale_actions(actions, action_thresh=0.05):
 
 
 class SpotBaseEnv(SpotRosSubscriber, gym.Env):
-    def __init__(self, spot: Spot, mask_rcnn_weights=None):
+    def __init__(self, spot: Spot, mask_rcnn_weights=None, mask_rcnn_device=None):
         super().__init__("spot_reality_gym")
         self.spot = spot
 
@@ -93,7 +93,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Mask RCNN
         if mask_rcnn_weights is not None:
-            self.mrcnn = MaskRcnnInference(mask_rcnn_weights, score_thresh=0.5)
+            self.mrcnn = MaskRcnnInference(
+                mask_rcnn_weights, score_thresh=0.5, device=mask_rcnn_device
+            )
         else:
             self.mrcnn = None
 
@@ -205,18 +207,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Get visual observations
         st = time.time()
-        # front_depth = (
-        #     fill_in_fast(self.front_depth.copy().astype(np.float32) * (3.5 / 255.0))
-        #     * (255.0 / 3.5)
-        # ).astype(np.uint8)
-        front_depth = (
-            fill_in_multiscale(
-                self.front_depth.copy().astype(np.float32) * (3.5 / 255.0)
-            )[0]
-            * (255.0 / 3.5)
-        ).astype(np.uint8)
-
-        # front_depth = self.filter_depth(front_depth)
+        front_depth = self.filter_depth(
+            self.front_depth, max_depth=MAX_DEPTH, whiten_black=True
+        )
         print("Filter time", time.time() - st)
 
         front_depth = cv2.resize(
@@ -256,20 +249,28 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return joints
 
     @staticmethod
-    def filter_depth(depth_img):
-        for _ in range(5):
-            filtered = cv2.medianBlur(depth_img, 19)
-            filtered[depth_img > 0] = depth_img[depth_img > 0]
-            depth_img = filtered
-        return depth_img
+    def filter_depth(depth_img, max_depth, whiten_black=False):
+        filtered_depth_img = (
+            fill_in_multiscale(
+                depth_img.copy().astype(np.float32) * (max_depth / 255.0)
+            )[0]
+            * (255.0 / max_depth)
+        ).astype(np.uint8)
+        if whiten_black:
+            filtered_depth_img[filtered_depth_img == 0] = 255
+        return filtered_depth_img
 
     def get_gripper_images(self, target_obj_id):
         arm_depth = self.hand_depth.copy()
         arm_depth_bbox = self.get_mrcnn_det(target_obj_id)
 
-        # Blur
-        arm_depth = self.filter_depth(arm_depth)
-        arm_depth = cv2.resize(arm_depth, (320, 240))
+        # Crop
+        arm_depth = arm_depth[:, 124:-60]
+        arm_depth_bbox = arm_depth_bbox[:, 62:-30]
+
+        # Blur and resize
+        arm_depth = self.filter_depth(arm_depth, max_depth=MAX_GRIPPER_DEPTH)
+        arm_depth = cv2.resize(arm_depth, (228, 240))
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
 
         # Normalize
@@ -378,3 +379,16 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         sim_transform = mn.Matrix4.from_(rotation_matrix_fixed, translation)
 
         return sim_transform
+
+    @staticmethod
+    def spot2habitat_translation(spot_translation):
+        return mn.Vector3(np.array(spot_translation)[np.array([0, 2, 1])])
+
+    @property
+    def curr_transform(self):
+        # Assume body is at default height of 0.5 m
+        # This is local_T_global.
+        return mn.Matrix4.from_(
+            mn.Matrix4.rotation_z(mn.Rad(self.yaw)).rotation(),
+            mn.Vector3(self.x, self.y, 0.5),
+        )
