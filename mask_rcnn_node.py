@@ -1,16 +1,16 @@
+import time
+
 import cv2
-import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from mask_rcnn_detectron2.inference import MaskRcnnInference
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2
 from std_msgs.msg import String
 
-WEIGHTS_FILE = "/home/naoki/gt/spot/mask_rcnn_detectron2/weights/model_0007499.pth"
-VIZ_TOPIC = "/mask_rcnn_visualizations"
-DET_TOPIC = "/mask_rcnn_detections"
-HAND_COLOR_TOPIC = f"/spot_cams/{SpotCamIds.HAND_COLOR}"
+WEIGHTS_FILE = "weights/model_0007499.pth"
+MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
+DETECTIONS_TOPIC = "/mask_rcnn_detections"
 
 
 class MaskRcnnNode:
@@ -24,13 +24,21 @@ class MaskRcnnNode:
         self.cv_bridge = CvBridge()
 
         # Instantiate ROS topic subscribers and publishers
-        rospy.Subscriber(HAND_COLOR_TOPIC, Image, self.hand_color_cb)
-        self.viz_pub = rospy.Publisher(VIZ_TOPIC, Image, queue_size=5)
-        self.det_pub = rospy.Publisher(DET_TOPIC, String, queue_size=5)
-        self.hand_color_img = np.zeros([256, 256, 3], dtype=np.uint8)
+        rospy.Subscriber(
+            HAND_RGB_TOPIC,
+            CompressedImage,
+            self.hand_rgb_cb,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        self.viz_pub = rospy.Publisher(
+            MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
+        )
+        self.det_pub = rospy.Publisher(DETECTIONS_TOPIC, String, queue_size=1)
+        self.hand_rgb_img = None
 
-    def hand_color_cb(self, msg):
-        self.hand_color_img = self.cv_bridge.imgmsg_to_cv2(msg, "bgr8")
+    def hand_rgb_cb(self, msg):
+        self.hand_rgb_img = msg
 
     @staticmethod
     def format_detections(detections):
@@ -45,7 +53,14 @@ class MaskRcnnNode:
         return detection_str
 
     def publish_detection(self):
-        img = cv2.cvtColor(self.hand_color_img, cv2.COLOR_BGR2RGB)
+        if self.hand_rgb_img is None:
+            rospy.loginfo("[mask_rcnn_node]: No RGB image from hand camera...")
+            time.sleep(1)
+            return
+        img = cv2.cvtColor(
+            self.cv_bridge.compressed_imgmsg_to_cv2(self.hand_rgb_img, "bgr8"),
+            cv2.COLOR_BGR2RGB,
+        )
         pred = self.mri.inference(img)
 
         if len(pred["instances"]) > 0:
@@ -56,7 +71,7 @@ class MaskRcnnNode:
 
         if self.visualize:
             viz_img = self.mri.visualize_inference(img, pred)
-            viz_img_msg = self.cv_bridge.cv2_to_imgmsg(viz_img, "bgr8")
+            viz_img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
             self.viz_pub.publish(viz_img_msg)
 
 

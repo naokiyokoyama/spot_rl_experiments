@@ -5,33 +5,18 @@ import gym
 import magnum as mn
 import numpy as np
 import quaternion
+import rospy
 from mask_rcnn_detectron2.inference import MaskRcnnInference
+from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
 from spot_wrapper.utils import say
 
-from depth_map_utils import fill_in_fast, fill_in_multiscale
-from spot_ros_node import MAX_DEPTH, MAX_GRIPPER_DEPTH, SpotRosSubscriber
-
-CTRL_HZ = 2
-# CTRL_HZ = 1
-MAX_EPISODE_STEPS = 100
-EE_GRIPPER_OFFSET = mn.Vector3(0.2, 0.0, 0.05)
-
-
-# Base action params
-MAX_LIN_VEL = 0.5  # m/s
-MAX_ANG_VEL = 0.523599  # 30 degrees/s, in radians
-VEL_TIME = 1 / CTRL_HZ
-
-# Arm action params
-MAX_JOINT_MOVEMENT = 0.0698132
-INITIAL_ARM_JOINT_ANGLES = np.deg2rad([0, -170, 120, 0, 75, 0])
-ARM_LOWER_LIMITS = np.deg2rad([-45, -180, 0, 0, -90, 0])
-ARM_UPPER_LIMITS = np.deg2rad([45, -45, 180, 0, 90, 0])
-# joints we can't control "arm0.el0", "arm0.wr1"
-JOINT_BLACKLIST = [2, 5]
-ACTUALLY_MOVE_ARM = True
-CENTER_TOLERANCE = 0.25
+from spot_ros_node import (
+    MASK_RCNN_VIZ_TOPIC,
+    MAX_DEPTH,
+    MAX_GRIPPER_DEPTH,
+    SpotRosSubscriber,
+)
 
 
 def pad_action(action):
@@ -58,35 +43,32 @@ def rescale_actions(actions, action_thresh=0.05):
 
 
 class SpotBaseEnv(SpotRosSubscriber, gym.Env):
-    def __init__(self, spot: Spot, mask_rcnn_weights=None, mask_rcnn_device=None):
+    def __init__(
+        self, config, spot: Spot, mask_rcnn_weights=None, mask_rcnn_device=None
+    ):
         super().__init__("spot_reality_gym")
+        self.config = config
         self.spot = spot
 
         # General environment parameters
-        self.ctrl_hz = CTRL_HZ
-        self.max_episode_steps = MAX_EPISODE_STEPS
+        self.ctrl_hz = config.CTRL_HZ
+        self.max_episode_steps = config.MAX_EPISODE_STEPS
         self.last_execution = time.time()
         self.should_end = False
         self.num_steps = 0
         self.reset_ran = False
 
-        # Robot state parameters
-        self.x, self.y, self.yaw = None, None, None
-        self.current_arm_pose = None
-
         # Base action parameters
-        self.max_lin_vel = MAX_LIN_VEL
-        self.max_ang_vel = MAX_ANG_VEL
-        self.vel_time = VEL_TIME
+        self.max_lin_vel = config.MAX_LIN_VEL
+        self.max_ang_vel = config.MAX_ANG_VEL
 
         # Arm action parameters
-        self.initial_arm_joint_angles = INITIAL_ARM_JOINT_ANGLES
-        self.max_joint_movement = MAX_JOINT_MOVEMENT
-        self.max_ang_vel = MAX_ANG_VEL
-        self.vel_time = VEL_TIME
-        self.actually_move_arm = ACTUALLY_MOVE_ARM
-        self.arm_lower_limits = ARM_LOWER_LIMITS
-        self.arm_upper_limits = ARM_UPPER_LIMITS
+        self.initial_arm_joint_angles = np.deg2rad(config.INITIAL_ARM_JOINT_ANGLES)
+        self.max_joint_movement = config.MAX_JOINT_MOVEMENT
+        self.max_ang_vel = config.MAX_ANG_VEL
+        self.actually_move_arm = config.ACTUALLY_MOVE_ARM
+        self.arm_lower_limits = np.deg2rad(config.ARM_LOWER_LIMITS)
+        self.arm_upper_limits = np.deg2rad(config.ARM_UPPER_LIMITS)
         self.locked_on_object_count = 0
         self.grasp_attempted = False
         self.place_attempted = False
@@ -98,12 +80,26 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             )
         else:
             self.mrcnn = None
+        self.mrcnn_viz_pub = rospy.Publisher(
+            MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
+        )
 
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
         spot.power_on()
         say("Standing up")
         spot.blocking_stand()
+
+    def viz_callback(self, msg):
+        # This node does not process mrcnn visualizations
+        pass
+
+    def robot_state_callback(self, msg):
+        # Transform robot's xy_yaw to be in home frame
+        super().robot_state_callback(msg)
+        self.x, self.y, self.yaw = self.spot.xy_yaw_global_to_home(
+            self.x, self.y, self.yaw
+        )
 
     def reset(self, *args, **kwargs):
         # Reset parameters
@@ -149,7 +145,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 x_vel = np.clip(x_vel, -1, 1) * self.max_lin_vel
                 ang_vel = np.clip(ang_vel, -1, 1) * self.max_ang_vel
                 # No horizontal velocity
-                self.spot.set_base_velocity(x_vel, 0.0, ang_vel, self.vel_time)
+                self.spot.set_base_velocity(x_vel, 0.0, ang_vel, 1 / self.ctrl_hz)
 
             if arm_action is not None:
                 arm_action = rescale_actions(arm_action)
@@ -206,11 +202,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         observations = {}
 
         # Get visual observations
-        st = time.time()
         front_depth = self.filter_depth(
             self.front_depth, max_depth=MAX_DEPTH, whiten_black=True
         )
-        print("Filter time", time.time() - st)
 
         front_depth = cv2.resize(
             front_depth, (120 * 2, 212), interpolation=cv2.INTER_AREA
@@ -241,24 +235,12 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             [
                 j
                 for idx, j in enumerate(self.current_arm_pose)
-                if idx not in JOINT_BLACKLIST
+                if idx not in self.config.JOINT_BLACKLIST
             ],
             dtype=np.float32,
         )
 
         return joints
-
-    @staticmethod
-    def filter_depth(depth_img, max_depth, whiten_black=False):
-        filtered_depth_img = (
-            fill_in_multiscale(
-                depth_img.copy().astype(np.float32) * (max_depth / 255.0)
-            )[0]
-            * (255.0 / max_depth)
-        ).astype(np.uint8)
-        if whiten_black:
-            filtered_depth_img[filtered_depth_img == 0] = 255
-        return filtered_depth_img
 
     def get_gripper_images(self, target_obj_id):
         arm_depth = self.hand_depth.copy()
@@ -286,6 +268,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         if len(pred["instances"]) > 0:
             det_str = self.format_detections(pred["instances"])
+            viz_img = self.mrcnn.visualize_inference(img, pred)
+            img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
+            self.mrcnn_viz_pub.publish(img_msg)
             print("[mask_rcnn]: " + det_str)
         else:
             det_str = "None"
@@ -321,7 +306,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         crosshair_in_bbox = x1 < width // 2 < x2 and y1 < height // 2 < y2
 
         locked_on = crosshair_in_bbox and all(
-            [abs(c - 0.5) < CENTER_TOLERANCE for c in [cx, cy]]
+            [abs(c - 0.5) < self.config.CENTER_TOLERANCE for c in [cx, cy]]
         )
         if locked_on:
             self.locked_on_object_count += 1

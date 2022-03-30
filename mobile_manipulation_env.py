@@ -1,7 +1,4 @@
-import time
-
 import magnum as mn
-import numpy as np
 from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
@@ -9,42 +6,34 @@ from base_env import SpotBaseEnv
 from gaze_env import SpotGazeEnv
 from place_env import SpotPlaceEnv
 from real_policy import GazePolicy, NavPolicy, PlacePolicy
+from utils import construct_config, get_default_parser, nav_target_from_waypoints
 
-TARGET_OBJ_ID = 3
-SUCCESS_DISTANCE = 0.2
-SUCCESS_ANGLE_DIST = np.deg2rad(5)
-OBJECT_LOCK_ON_NEEDED = 2
-PLACES_NEEDED = 3
 PLACE_TARGET = mn.Vector3(1.03, -0.22, 0.37)
-GAZE_DESTINATION = [
-    (4.558099926809142, 1.9298394486256936),
-    np.deg2rad(90.0),
-]
-PLACE_DESTINATION = [
-    (3.5124963425520868, -1.8734770435783519),
-    np.deg2rad(-87.77534964347153),
-]
-
-NAV_WEIGHTS = "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
-GAZE_WEIGHTS = "weights/speed_seed1_speed0.0872665_1648513272.ckpt.19.pth"
-PLACE_WEIGHTS = "weights/rel_place_energy_manual_seed10_ckpt.49.pth"
-MASK_RCNN_WEIGHTS = "weights/model_0007499.pth"
-
-# DEVICE = "cpu"
-DEVICE = "cuda:0"
+GAZE_DESTINATION = nav_target_from_waypoints("suitcase")
+PLACE_DESTINATION = nav_target_from_waypoints("spotcase")
 
 
 def main(spot):
-    policy = SequentialExperts(NAV_WEIGHTS, GAZE_WEIGHTS, PLACE_WEIGHTS, device=DEVICE)
+    parser = get_default_parser()
+    args = parser.parse_args()
+    config = construct_config(args.opts)
+    policy = SequentialExperts(
+        config.WEIGHTS.NAV,
+        config.WEIGHTS.GAZE,
+        config.WEIGHTS.PLACE,
+        device=config.DEVICE,
+    )
     policy.reset()
 
     env = SpotMobileManipulationSeqEnv(
-        spot, mask_rcnn_weights=MASK_RCNN_WEIGHTS, mask_rcnn_device=DEVICE
+        config,
+        spot,
+        mask_rcnn_weights=config.WEIGHTS.MRCNN,
+        mask_rcnn_device=config.DEVICE,
     )
     observations = env.reset()
     done = False
     say("Starting episode")
-    time.sleep(2)
     expert = Tasks.NAV
     try:
         while not done:
@@ -63,7 +52,6 @@ def main(spot):
                 policy.nav_policy.reset()
 
         say("Environment is done.")
-        time.sleep(20)
     finally:
         spot.power_off()
 
@@ -104,29 +92,28 @@ class SequentialExperts:
 
 
 class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
-    def __init__(self, spot: Spot, **kwargs):
-        SpotBaseEnv.__init__(self, spot, **kwargs)
+    def __init__(self, config, spot: Spot, **kwargs):
+        SpotBaseEnv.__init__(self, config, spot, **kwargs)
 
         # Nav
         self.goal_xy = None
         self.goal_heading = None
-        self.succ_distance = SUCCESS_DISTANCE
-        self.succ_angle = SUCCESS_ANGLE_DIST
+        self.succ_distance = config.SUCCESS_DISTANCE
+        self.succ_angle = config.SUCCESS_ANGLE_DIST
 
         # Gaze
         self.locked_on_object_count = 0
-        self.target_obj_id = TARGET_OBJ_ID
+        self.target_obj_id = config.TARGET_OBJ_ID
 
         # Place
         self.place_target = PLACE_TARGET
-        self.places_needed = PLACES_NEEDED
-        self.place_attempts = 0
+        self.ee_gripper_offset = mn.Vector3(config.EE_GRIPPER_OFFSET)
         self.prev_joints = None
         self.placed = False
 
         # General
-        self.gaze_destination = GAZE_DESTINATION
-        self.place_destination = PLACE_DESTINATION
+        self.gaze_nav_target = GAZE_DESTINATION
+        self.place_nav_target = PLACE_DESTINATION
         self.max_episode_steps = 1000
 
     def reset(self):
@@ -138,7 +125,10 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
         self.spot.open_gripper()
 
         # Nav
-        self.goal_xy, self.goal_heading = self.gaze_destination
+        self.goal_xy, self.goal_heading = (
+            self.gaze_nav_target[:2],
+            self.gaze_nav_target[-1],
+        )
         assert len(self.goal_xy) == 2
 
         # Gaze
@@ -155,12 +145,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
     def get_observations(self):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
         observations.update(super().get_observations())
-        observations["obj_start_sensor"] = self.get_place_dist(
-            self.place_target,
-            place_nav_targ=[*PLACE_DESTINATION[0], PLACE_DESTINATION[-1]],
-        )
-
-        SpotPlaceEnv.update_place_attempts(self, observations["joint"])
+        observations["obj_start_sensor"] = self.get_place_sensor()
 
         return observations
 
@@ -168,8 +153,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
 class SpotMobileManipulationSeqEnv(
     SpotMobileManipulationBaseEnv, SpotGazeEnv, SpotPlaceEnv
 ):
-    def __init__(self, spot, **kwargs):
-        super().__init__(spot, **kwargs)
+    def __init__(self, config, spot, **kwargs):
+        super().__init__(config, spot, **kwargs)
         self.current_task = Tasks.NAV
         self.nav_succ_count = 0
 
@@ -180,14 +165,16 @@ class SpotMobileManipulationSeqEnv(
         return observations
 
     def step(self, grasp=False, place=False, *args, **kwargs):
+        _, xy_dist, z_dist = self.get_place_distance()
         place = (
-            self.place_attempts >= self.places_needed
-            and self.current_task == Tasks.PLACE
+            self.current_task == Tasks.PLACE
+            and xy_dist < self.config.SUCC_XY_DIST
+            and z_dist < self.config.SUCC_Z_DIST
         )
 
         grasp = (
-            self.locked_on_object_count == OBJECT_LOCK_ON_NEEDED
-            and self.current_task == Tasks.GAZE
+            self.current_task == Tasks.GAZE
+            and self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED
         )
 
         observations, reward, done, info = super().step(
@@ -199,10 +186,13 @@ class SpotMobileManipulationSeqEnv(
         ):
             self.nav_succ_count += 1
             if self.nav_succ_count == 1:
-                self.spot.set_base_velocity(0.0, 0.0, 0.0, self.vel_time)
+                self.spot.set_base_velocity(0.0, 0.0, 0.0, 1 / self.ctrl_hz)
                 if not self.grasp_attempted:
                     self.current_task = Tasks.GAZE
-                    self.goal_xy, self.goal_heading = self.place_destination
+                    self.goal_xy, self.goal_heading = (
+                        self.place_nav_target[:2],
+                        self.place_nav_target[2],
+                    )
                 else:
                     self.current_task = Tasks.PLACE
         else:

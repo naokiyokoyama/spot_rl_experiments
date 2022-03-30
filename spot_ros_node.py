@@ -15,6 +15,8 @@ from std_msgs.msg import (
     MultiArrayLayout,
 )
 
+from depth_map_utils import fill_in_multiscale
+
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
 COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"
 ROBOT_STATE_TOPIC = "/robot_state"
@@ -206,6 +208,18 @@ class SpotRosSubscriber:
         self.x, self.y, self.yaw = msg.data[:3]
         self.current_arm_pose = msg.data[3:]
 
+    @staticmethod
+    def filter_depth(depth_img, max_depth, whiten_black=False):
+        filtered_depth_img = (
+            fill_in_multiscale(
+                depth_img.copy().astype(np.float32) * (max_depth / 255.0)
+            )[0]
+            * (255.0 / max_depth)
+        ).astype(np.uint8)
+        if whiten_black:
+            filtered_depth_img[filtered_depth_img == 0] = 255
+        return filtered_depth_img
+
 
 class SpotRosProprioceptionPublisher:
     def __init__(self, spot):
@@ -224,7 +238,7 @@ class SpotRosProprioceptionPublisher:
         st = time.time()
         robot_state = self.spot.get_robot_state()
         msg = Float32MultiArray()
-        xy_yaw = self.spot.get_xy_yaw(robot_state=robot_state)
+        xy_yaw = self.spot.get_xy_yaw(robot_state=robot_state, use_boot_origin=True)
         if self.nav_pose_buff is None:
             self.nav_pose_buff = np.tile(xy_yaw, [NAV_POSE_BUFFER_LEN, 1])
         else:

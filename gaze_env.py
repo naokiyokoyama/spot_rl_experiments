@@ -1,51 +1,40 @@
-import time
-
 import cv2
 import numpy as np
-from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
+from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
 from base_env import SpotBaseEnv
 from real_policy import GazePolicy
+from utils import construct_config, get_default_parser
 
-OBJECT_LOCK_ON_NEEDED = 3
-
-MASK_RCNN_WEIGHTS = "weights/model_0007499.pth"
-TARGET_OBJ_ID = 3  # rubiks cube
 DEBUG = False
 
 
 def main(spot):
-    env = SpotGazeEnv(spot, mask_rcnn_weights=MASK_RCNN_WEIGHTS)
-    print("Loading policy...")
-    policy = GazePolicy(
-        "weights/speed_seed1_speed0.0872665_1648513272.ckpt.19.pth",
-        device="cuda:0",
-    )
-    print("Resetting policy")
+    parser = get_default_parser()
+    args = parser.parse_args()
+    config = construct_config(args.opts)
+
+    env = SpotGazeEnv(config, spot, mask_rcnn_weights=config.WEIGHTS.MRCNN)
+    policy = GazePolicy(config.WEIGHTS.GAZE, device=config.DEVICE)
     policy.reset()
-    print("Resetting Env")
     observations = env.reset()
-    for k, v in observations.items():
-        print(k, v.shape)
     done = False
     say("Starting episode")
-    time.sleep(2)
     try:
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(arm_action=action)
-        time.sleep(20)
     finally:
         spot.power_off()
 
 
 class SpotGazeEnv(SpotBaseEnv):
-    def __init__(self, spot: Spot, **kwargs):
-        super().__init__(spot, **kwargs)
+    def __init__(self, config, spot: Spot, **kwargs):
+        super().__init__(config, spot, **kwargs)
 
         self.locked_on_object_count = 0
-        self.target_obj_id = TARGET_OBJ_ID
+        self.target_obj_id = config.TARGET_OBJ_ID
         self.should_end = False
 
     def reset(self):
@@ -60,12 +49,12 @@ class SpotGazeEnv(SpotBaseEnv):
 
         # Reset parameters
         self.locked_on_object_count = 0
-        self.target_obj_id = TARGET_OBJ_ID
+        self.target_obj_id = self.config.TARGET_OBJ_ID
 
         return observations
 
     def step(self, base_action=None, arm_action=None, grasp=False, place=False):
-        if self.locked_on_object_count == OBJECT_LOCK_ON_NEEDED:
+        if self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED:
             grasp = True
 
         observations, reward, done, info = super().step(

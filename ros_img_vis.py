@@ -22,14 +22,27 @@ class SpotRosVisualizer(SpotRosSubscriber):
 
         # Gather latest images
         self.decompress_imgs()
-        msgs = [self.front_depth, self.hand_depth, self.hand_rgb, self.det]
-        imgs = [i for i in msgs if i is not None]
-        imgs = [
-            i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR) for i in imgs
+        orig_msgs = [self.front_depth, self.hand_depth[:, 124:-60], self.hand_rgb]
+        processed_msgs = [
+            self.filter_depth(self.front_depth, max_depth=3.5, whiten_black=True),
+            self.filter_depth(
+                self.hand_depth[:, 124:-60], max_depth=1.6, whiten_black=True
+            ),
+            np.ones_like(self.hand_rgb)
+            if self.det is None
+            else self.cv_bridge.compressed_imgmsg_to_cv2(self.det),
         ]
+        img_rows = []
+        for msgs in [orig_msgs, processed_msgs]:
+            imgs = [i for i in msgs if i is not None]
+            imgs = [
+                i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR)
+                for i in imgs
+            ]
 
-        # Make sure all imgs are same height
-        img = resize_to_tallest(imgs, hstack=True)
+            # Make sure all imgs are same height
+            img_rows.append(resize_to_tallest(imgs, hstack=True))
+        img = np.vstack(img_rows)
         cv2.imshow("ROS Spot Images", img)
         cv2.waitKey(1)
 

@@ -1,5 +1,3 @@
-import time
-
 import magnum as mn
 import numpy as np
 from spot_wrapper.spot import Spot
@@ -7,28 +5,25 @@ from spot_wrapper.utils import say
 
 from base_env import SpotBaseEnv
 from real_policy import PlacePolicy
-
-CTRL_HZ = 1.0
-MAX_EPISODE_STEPS = 120
-ACTUALLY_GRASP = True
-ACTUALLY_MOVE_ARM = True
-MAX_JOINT_MOVEMENT = 0.0698132
-MAX_DEPTH = 10.0
-EE_GRIPPER_OFFSET = mn.Vector3(0.2, 0.0, 0.05)
-# EE_GRIPPER_OFFSET = mn.Vector3(0.0, 0.0, 0.0)
-# PLACE_TARGET = mn.Vector3(1.2, 0.58, -0.55)
-PLACE_TARGET = mn.Vector3(0.75, 0.25, 0.25)
-PLACES_NEEDED = 3
-PLACE_NAV_TARGET = [7.934866519737901, -2.18845070377417, -90]
+from utils import construct_config, get_default_parser, nav_target_from_waypoints
 
 
 def main(spot):
-    env = SpotPlaceEnv(spot)
-    policy = PlacePolicy(
-        "weights/rel_place_energy_manual_seed10_ckpt.49.pth", device="cpu"
-    )
+    parser = get_default_parser()
+    parser.add_argument("-p", "--place_target")
+    parser.add_argument("-w", "--waypoint")
+    args = parser.parse_args()
+    config = construct_config(args.opts)
+
+    place_target = [float(i) for i in args.place_target.split(",")]
+    if args.waypoint is None:
+        place_nav_target = None
+    else:
+        place_nav_target = nav_target_from_waypoints(args.waypoint)
+
+    env = SpotPlaceEnv(config, spot, place_target, place_nav_target)
+    policy = PlacePolicy(config.WEIGHTS.PLACE, device=config.DEVICE)
     policy.reset()
-    print("Loaded policy!")
     observations = env.reset()
     done = False
     say("Starting episode")
@@ -36,22 +31,20 @@ def main(spot):
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(arm_action=action)
-        time.sleep(20)
     finally:
         spot.power_off()
 
 
 class SpotPlaceEnv(SpotBaseEnv):
-    def __init__(self, spot: Spot, place_target=PLACE_TARGET, target_is_local=True):
-        super().__init__(spot)
-        self.spot.open_gripper()
-        say("Please put object in my hand.")
-        time.sleep(5)
+    def __init__(self, config, spot: Spot, place_target, place_nav_target=None):
+        super().__init__(config, spot)
         self.spot.close_gripper()
-        self.place_target = place_target
-        self.target_is_local = target_is_local
+        self.place_target = np.array(place_target)
+        self.place_nav_target = (
+            None if place_nav_target is None else np.array(place_nav_target)
+        )
         self.place_attempts = 0
-        self.places_needed = PLACES_NEEDED
+        self.ee_gripper_offset = mn.Vector3(config.EE_GRIPPER_OFFSET)
         self.prev_joints = None
         self.placed = False
 
@@ -67,7 +60,8 @@ class SpotPlaceEnv(SpotBaseEnv):
         return observations
 
     def step(self, place=False, *args, **kwargs):
-        place = self.place_attempts >= self.places_needed
+        _, xy_dist, z_dist = self.get_place_distance()
+        place = xy_dist < self.config.SUCC_XY_DIST and z_dist < self.config.SUCC_Z_DIST
         return super().step(place=place, *args, **kwargs)
 
     def get_success(self, observations):
@@ -76,48 +70,64 @@ class SpotPlaceEnv(SpotBaseEnv):
     def get_observations(self):
         observations = {
             "joint": self.get_arm_joints(),
-            "obj_start_sensor": self.get_place_dist(
-                self.place_target, place_nav_targ=PLACE_NAV_TARGET
-            ),
+            "obj_start_sensor": self.get_place_sensor(),
         }
-
-        self.update_place_attempts(observations["joint"])
 
         return observations
 
-    def update_place_attempts(self, curr_joints):
-        if self.prev_joints is None or np.any(
-            np.abs(self.prev_joints - curr_joints) > np.deg2rad(1)
-        ):
-            self.place_attempts = 0
-        else:
-            self.place_attempts += 1
-
-        self.prev_joints = curr_joints
-
-    def get_place_dist(self, place_target, place_nav_targ=None):
+    def get_place_sensor(self):
         # The place goal should be provided relative to the local robot frame given that
         # the robot is at the place receptacle
-
-        position, rotation = self.spot.get_base_transform_to("link_wr1")
-        wrist_T_base = self.spot2habitat_transform(position, rotation)
-        gripper_T_base = wrist_T_base @ mn.Matrix4.translation(EE_GRIPPER_OFFSET)
+        gripper_T_base = self.get_in_gripper_tf()
         base_T_gripper = gripper_T_base.inverted()
-        if place_nav_targ is None:
-            hab_place_target = self.spot2habitat_translation(place_target)
-        else:
-            navtarg_T_global = mn.Matrix4.from_(
-                mn.Matrix4.rotation_z(mn.Rad(place_nav_targ[2])).rotation(),
-                mn.Vector3(mn.Vector3(*place_nav_targ[:2], 0.5)),
-            )
-            global_place_target = navtarg_T_global.transform_point(place_target)
-            global_T_local = self.curr_transform.inverted()
-            local_place_target = global_T_local.transform_point(global_place_target)
-            local_place_target[1] *= -1  # Still not sure why this is necessary
-            hab_place_target = self.spot2habitat_translation(local_place_target)
+        base_frame_place_target = self.get_base_frame_place_target()
+        hab_place_target = self.spot2habitat_translation(base_frame_place_target)
         gripper_pos = base_T_gripper.transform_point(hab_place_target)
 
         return gripper_pos
+
+    def get_base_frame_place_target(self):
+        if self.place_nav_target is None:
+            base_frame_place_target = self.place_target
+        else:
+            base_frame_place_target = self.get_target_in_base_frame(
+                self.place_target, self.place_nav_target
+            )
+        return base_frame_place_target
+
+    def get_place_distance(self):
+        gripper_T_base = self.get_in_gripper_tf()
+        base_frame_gripper_pos = np.array(gripper_T_base.translation)
+        base_frame_place_target = self.get_base_frame_place_target()
+        hab_place_target = self.spot2habitat_translation(base_frame_place_target)
+        place_dist = np.linalg.norm(hab_place_target - base_frame_gripper_pos)
+        xy_dist = np.linalg.norm(
+            base_frame_place_target[[0, 2]] - base_frame_gripper_pos[[0, 2]]
+        )
+        z_dist = abs(base_frame_place_target[1] - base_frame_gripper_pos[1])
+        print(123123, place_dist, xy_dist, z_dist)
+        return place_dist, xy_dist, z_dist
+
+    def get_in_gripper_tf(self):
+        position, rotation = self.spot.get_base_transform_to("link_wr1")
+        wrist_T_base = self.spot2habitat_transform(position, rotation)
+        gripper_T_base = wrist_T_base @ mn.Matrix4.translation(self.ee_gripper_offset)
+
+        return gripper_T_base
+
+    def get_target_in_base_frame(self, place_target, place_nav_targ):
+        navtarg_T_global = mn.Matrix4.from_(
+            mn.Matrix4.rotation_z(mn.Rad(place_nav_targ[2])).rotation(),
+            mn.Vector3(mn.Vector3(*place_nav_targ[:2], 0.5)),
+        )
+        global_place_target = navtarg_T_global.transform_point(place_target)
+        global_T_local = self.curr_transform.inverted()
+        local_place_target = np.array(
+            global_T_local.transform_point(global_place_target)
+        )
+        local_place_target[1] *= -1  # Still not sure why this is necessary
+
+        return local_place_target
 
 
 if __name__ == "__main__":

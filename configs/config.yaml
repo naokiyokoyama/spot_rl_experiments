@@ -1,0 +1,37 @@
+WEIGHTS:
+  NAV: "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
+  GAZE: "weights/speed_seed1_speed0.0872665_1648513272.ckpt.19.pth"
+  PLACE: "weights/rel_place_energy_manual_seed10_ckpt.49.pth"
+  MRCNN: "weights/model_0007499.pth"
+
+DEVICE: "cuda:0"
+
+# General env params
+CTRL_HZ: 2
+MAX_EPISODE_STEPS: 100
+
+# Nav env
+SUCCESS_DISTANCE: 0.15
+SUCCESS_ANGLE_DIST: 0.0872665
+
+# Gaze env
+CENTER_TOLERANCE: 0.25
+OBJECT_LOCK_ON_NEEDED: 2
+TARGET_OBJ_ID: 3
+
+# Place env
+EE_GRIPPER_OFFSET: [0.2, 0.0, 0.05]
+SUCC_XY_DIST: 0.1
+SUCC_Z_DIST: 0.20
+
+# Base action params
+MAX_LIN_VEL: 0.5  # m/s
+MAX_ANG_VEL: 0.523599  # 30 degrees/s, in radians
+
+# Arm action params
+MAX_JOINT_MOVEMENT: 0.0698132
+INITIAL_ARM_JOINT_ANGLES: [0, -170, 120, 0, 75, 0]
+ARM_LOWER_LIMITS: [-45, -180, 0, 0, -90, 0]
+ARM_UPPER_LIMITS: [45, -45, 180, 0, 90, 0]
+JOINT_BLACKLIST: [2, 5] # joints we can't control "arm0.el0", "arm0.wr1"
+ACTUALLY_MOVE_ARM: True
