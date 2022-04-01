@@ -40,9 +40,9 @@ class SpotGazeEnv(SpotBaseEnv):
     def reset(self):
         # Move arm to initial configuration
         cmd_id = self.spot.set_arm_joint_positions(
-            positions=self.initial_arm_joint_angles, travel_time=2
+            positions=self.initial_arm_joint_angles, travel_time=1
         )
-        self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
+        self.spot.block_until_arm_arrives(cmd_id, timeout_sec=1)
         self.spot.open_gripper()
 
         observations = super().reset()
