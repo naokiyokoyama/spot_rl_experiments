@@ -64,7 +64,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Arm action parameters
         self.initial_arm_joint_angles = np.deg2rad(config.INITIAL_ARM_JOINT_ANGLES)
-        self.max_joint_movement = config.MAX_JOINT_MOVEMENT
         self.max_ang_vel = config.MAX_ANG_VEL
         self.actually_move_arm = config.ACTUALLY_MOVE_ARM
         self.arm_lower_limits = np.deg2rad(config.ARM_LOWER_LIMITS)
@@ -86,9 +85,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
-        spot.power_on()
-        say("Standing up")
-        spot.blocking_stand()
 
     def viz_callback(self, msg):
         # This node does not process mrcnn visualizations
@@ -113,13 +109,21 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         observations = self.get_observations()
         return observations
 
-    def step(self, base_action=None, arm_action=None, grasp=False, place=False):
+    def step(
+        self,
+        base_action=None,
+        arm_action=None,
+        grasp=False,
+        place=False,
+        max_joint_movement_key="MAX_JOINT_MOVEMENT",
+    ):
         """Moves the arm and returns updated observations
 
         :param base_action: np.array of velocities (lineaer, angular)
         :param arm_action: np.array of radians denoting how each joint is to be moved
         :param grasp: whether to call the grasp_center_of_hand_depth() METHOD
         :param place: whether to call the open_gripper() method
+        :param max_joint_movement_key: max allowable displacement of arm joints
         :return:
         """
         assert self.reset_ran, ".reset() must be called first!"
@@ -156,14 +160,14 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 arm_action = rescale_actions(arm_action)
                 # Insert zeros for joints we don't control
                 padded_action = np.clip(pad_action(arm_action), -1.0, 1.0)
-                scaled_action = padded_action * self.max_joint_movement
+                scaled_action = padded_action * self.config[max_joint_movement_key]
                 target_positions = self.current_arm_pose + scaled_action
                 target_positions = np.clip(
                     target_positions, self.arm_lower_limits, self.arm_upper_limits
                 )
                 if self.actually_move_arm:
                     _ = self.spot.set_arm_joint_positions(
-                        positions=target_positions, travel_time=1 / self.ctrl_hz
+                        positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
                     )
         # Pause until enough time has passed during this step
         while time.time() < self.last_execution + 1 / self.ctrl_hz:
@@ -262,7 +266,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Normalize
         arm_depth = np.float32(arm_depth) / 255.0
-        arm_depth[arm_depth < 0.04] = 0.0
 
         return arm_depth, arm_depth_bbox
 
@@ -382,3 +385,8 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             mn.Matrix4.rotation_z(mn.Rad(self.yaw)).rotation(),
             mn.Vector3(self.x, self.y, 0.5),
         )
+
+    def power_robot(self):
+        self.spot.power_on()
+        say("Standing up")
+        self.spot.blocking_stand()

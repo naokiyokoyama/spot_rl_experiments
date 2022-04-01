@@ -6,11 +6,16 @@ from base_env import SpotBaseEnv
 from gaze_env import SpotGazeEnv
 from place_env import SpotPlaceEnv
 from real_policy import GazePolicy, NavPolicy, PlacePolicy
-from utils import construct_config, get_default_parser, nav_target_from_waypoints
+from utils import (
+    construct_config,
+    get_default_parser,
+    nav_target_from_waypoints,
+    place_target_from_waypoints,
+)
 
-PLACE_TARGET = mn.Vector3(1.03, -0.22, 0.37)
+PLACE_TARGET = place_target_from_waypoints("pillar_bin")
 GAZE_DESTINATION = nav_target_from_waypoints("suitcase")
-PLACE_DESTINATION = nav_target_from_waypoints("spotcase")
+PLACE_DESTINATION = nav_target_from_waypoints("pillar")
 
 
 def main(spot):
@@ -31,6 +36,7 @@ def main(spot):
         mask_rcnn_weights=config.WEIGHTS.MRCNN,
         mask_rcnn_device=config.DEVICE,
     )
+    env.power_robot()
     observations = env.reset()
     done = False
     say("Starting episode")
@@ -108,8 +114,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
         # Place
         self.place_target = PLACE_TARGET
         self.ee_gripper_offset = mn.Vector3(config.EE_GRIPPER_OFFSET)
-        self.prev_joints = None
         self.placed = False
+        self.place_target_is_local = False
 
         # General
         self.gaze_nav_target = GAZE_DESTINATION
@@ -177,8 +183,17 @@ class SpotMobileManipulationSeqEnv(
             and self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED
         )
 
+        if self.current_task == Tasks.PLACE:
+            max_joint_movement_key = "MAX_JOINT_MOVEMENT_2"
+        else:
+            max_joint_movement_key = "MAX_JOINT_MOVEMENT"
+
         observations, reward, done, info = super().step(
-            grasp=grasp, place=place, *args, **kwargs
+            grasp=grasp,
+            place=place,
+            max_joint_movement_key=max_joint_movement_key,
+            *args,
+            **kwargs,
         )
 
         if self.current_task == Tasks.NAV and self.get_nav_success(
@@ -200,9 +215,6 @@ class SpotMobileManipulationSeqEnv(
 
         if self.current_task == Tasks.GAZE and self.grasp_attempted:
             self.current_task = Tasks.NAV
-
-        if not self.current_task == Tasks.PLACE:
-            self.place_attempts = 0
 
         info["correct_skill"] = self.current_task
         print("correct_skill", self.current_task)

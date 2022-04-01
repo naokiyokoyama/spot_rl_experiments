@@ -1,3 +1,5 @@
+import time
+
 import magnum as mn
 import numpy as np
 from spot_wrapper.spot import Spot
@@ -5,23 +7,25 @@ from spot_wrapper.utils import say
 
 from base_env import SpotBaseEnv
 from real_policy import PlacePolicy
-from utils import construct_config, get_default_parser, nav_target_from_waypoints
+from utils import construct_config, get_default_parser, place_target_from_waypoints
 
 
 def main(spot):
     parser = get_default_parser()
     parser.add_argument("-p", "--place_target")
     parser.add_argument("-w", "--waypoint")
+    parser.add_argument("-l", "--target_is_local", action="store_true")
     args = parser.parse_args()
     config = construct_config(args.opts)
 
-    place_target = [float(i) for i in args.place_target.split(",")]
-    if args.waypoint is None:
-        place_nav_target = None
+    if args.waypoint is not None:
+        assert not args.target_is_local
+        place_target = place_target_from_waypoints(args.waypoint)
     else:
-        place_nav_target = nav_target_from_waypoints(args.waypoint)
-
-    env = SpotPlaceEnv(config, spot, place_target, place_nav_target)
+        assert args.place_target is not None
+        place_target = [float(i) for i in args.place_target.split(",")]
+    env = SpotPlaceEnv(config, spot, place_target, args.target_is_local)
+    env.power_robot()
     policy = PlacePolicy(config.WEIGHTS.PLACE, device=config.DEVICE)
     policy.reset()
     observations = env.reset()
@@ -36,16 +40,11 @@ def main(spot):
 
 
 class SpotPlaceEnv(SpotBaseEnv):
-    def __init__(self, config, spot: Spot, place_target, place_nav_target=None):
+    def __init__(self, config, spot: Spot, place_target, target_is_local=False):
         super().__init__(config, spot)
-        self.spot.close_gripper()
         self.place_target = np.array(place_target)
-        self.place_nav_target = (
-            None if place_nav_target is None else np.array(place_nav_target)
-        )
-        self.place_attempts = 0
+        self.place_target_is_local = target_is_local
         self.ee_gripper_offset = mn.Vector3(config.EE_GRIPPER_OFFSET)
-        self.prev_joints = None
         self.placed = False
 
     def reset(self, *args, **kwargs):
@@ -87,12 +86,10 @@ class SpotPlaceEnv(SpotBaseEnv):
         return gripper_pos
 
     def get_base_frame_place_target(self):
-        if self.place_nav_target is None:
+        if self.place_target_is_local:
             base_frame_place_target = self.place_target
         else:
-            base_frame_place_target = self.get_target_in_base_frame(
-                self.place_target, self.place_nav_target
-            )
+            base_frame_place_target = self.get_target_in_base_frame(self.place_target)
         return base_frame_place_target
 
     def get_place_distance(self):
@@ -115,16 +112,9 @@ class SpotPlaceEnv(SpotBaseEnv):
 
         return gripper_T_base
 
-    def get_target_in_base_frame(self, place_target, place_nav_targ):
-        navtarg_T_global = mn.Matrix4.from_(
-            mn.Matrix4.rotation_z(mn.Rad(place_nav_targ[2])).rotation(),
-            mn.Vector3(mn.Vector3(*place_nav_targ[:2], 0.5)),
-        )
-        global_place_target = navtarg_T_global.transform_point(place_target)
+    def get_target_in_base_frame(self, place_target):
         global_T_local = self.curr_transform.inverted()
-        local_place_target = np.array(
-            global_T_local.transform_point(global_place_target)
-        )
+        local_place_target = np.array(global_T_local.transform_point(place_target))
         local_place_target[1] *= -1  # Still not sure why this is necessary
 
         return local_place_target

@@ -16,6 +16,7 @@ def main(spot):
     config = construct_config(args.opts)
 
     env = SpotGazeEnv(config, spot, mask_rcnn_weights=config.WEIGHTS.MRCNN)
+    env.power_robot()
     policy = GazePolicy(config.WEIGHTS.GAZE, device=config.DEVICE)
     policy.reset()
     observations = env.reset()

@@ -28,3 +28,9 @@ def nav_target_from_waypoints(waypoint):
         waypoints = yaml.safe_load(f)
     goal_x, goal_y, goal_heading = waypoints[waypoint]
     return goal_x, goal_y, np.deg2rad(goal_heading)
+
+
+def place_target_from_waypoints(waypoint):
+    with open(WAYPOINTS_YAML) as f:
+        waypoints = yaml.safe_load(f)
+    return np.array(waypoints["place_targets"][waypoint])

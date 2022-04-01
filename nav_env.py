@@ -21,6 +21,7 @@ def main(spot):
     policy.reset()
 
     env = SpotNavEnv(config, spot)
+    env.power_robot()
     if args.waypoint is not None:
         goal_x, goal_y, goal_heading = nav_target_from_waypoints(args.waypoint)
     else:
