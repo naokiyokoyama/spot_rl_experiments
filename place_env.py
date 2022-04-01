@@ -100,12 +100,12 @@ class SpotPlaceEnv(SpotBaseEnv):
         base_frame_gripper_pos = np.array(gripper_T_base.translation)
         base_frame_place_target = self.get_base_frame_place_target()
         hab_place_target = self.spot2habitat_translation(base_frame_place_target)
+        hab_place_target = np.array(hab_place_target)
         place_dist = np.linalg.norm(hab_place_target - base_frame_gripper_pos)
         xy_dist = np.linalg.norm(
-            base_frame_place_target[[0, 2]] - base_frame_gripper_pos[[0, 2]]
+            hab_place_target[[0, 2]] - base_frame_gripper_pos[[0, 2]]
         )
-        z_dist = abs(base_frame_place_target[1] - base_frame_gripper_pos[1])
-        print(123123, place_dist, xy_dist, z_dist)
+        z_dist = abs(hab_place_target[1] - base_frame_gripper_pos[1])
         return place_dist, xy_dist, z_dist
 
     def get_in_gripper_tf(self):
