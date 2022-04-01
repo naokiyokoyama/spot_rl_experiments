@@ -11,7 +11,7 @@ CTRL_HZ: 2
 MAX_EPISODE_STEPS: 100
 
 # Nav env
-SUCCESS_DISTANCE: 0.15
+SUCCESS_DISTANCE: 0.30
 SUCCESS_ANGLE_DIST: 0.0872665
 
 # Gaze env
@@ -34,5 +34,5 @@ MAX_JOINT_MOVEMENT: 0.0872665
 INITIAL_ARM_JOINT_ANGLES: [0, -170, 120, 0, 75, 0]
 ARM_LOWER_LIMITS: [-45, -180, 0, 0, -90, 0]
 ARM_UPPER_LIMITS: [45, -45, 180, 0, 90, 0]
-JOINT_BLACKLIST: [2, 5] # joints we can't control "arm0.el0", "arm0.wr1"
+JOINT_BLACKLIST: [3, 5] # joints we can't control "arm0.el0", "arm0.wr1"
 ACTUALLY_MOVE_ARM: True
