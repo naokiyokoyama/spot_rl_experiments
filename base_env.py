@@ -251,18 +251,34 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         return joints
 
-    def get_gripper_images(self, target_obj_id):
+    def get_gripper_images(
+        self, target_obj_id, left_crop=124, right_crop=60, new_width=228, new_height=240
+    ):
         arm_depth = self.hand_depth.copy()
-        arm_depth_bbox = self.get_mrcnn_det(target_obj_id)
+        orig_height, orig_width = arm_depth.shape[:2]
+        obj_bbox = self.get_mrcnn_det(target_obj_id)
 
-        # Crop
-        arm_depth = arm_depth[:, 124:-60]
-        arm_depth_bbox = arm_depth_bbox[:, 62:-30]
+        # Crop out black vertical bars on the left and right edges of aligned depth img
+        arm_depth = arm_depth[:, left_crop:-right_crop]
 
         # Blur and resize
         arm_depth = self.filter_depth(arm_depth, max_depth=MAX_GRIPPER_DEPTH)
-        arm_depth = cv2.resize(arm_depth, (228, 240))
+        arm_depth = cv2.resize(
+            arm_depth, (new_width, new_height), interpolation=cv2.INTER_AREA
+        )
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
+
+        # Generate object mask channel
+        arm_depth_bbox = np.zeros_like(arm_depth)
+        if obj_bbox is not None:
+            x1, y1, x2, y2 = obj_bbox
+            width_scale = new_width / orig_width
+            height_scale = new_height / orig_height
+            x1 = int((x1 - left_crop) * width_scale)
+            x2 = int((x2 - left_crop) * width_scale)
+            y1 = int(y1 * height_scale)
+            y2 = int(y2 * height_scale)
+            arm_depth_bbox[y1:y2, x1:x2] = 1.0
 
         # Normalize
         arm_depth = np.float32(arm_depth) / 255.0
@@ -270,7 +286,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return arm_depth, arm_depth_bbox
 
     def get_mrcnn_det(self, target_obj_id):
-        arm_depth_bbox = np.zeros([240, 320, 1], dtype=np.float32)
         img = cv2.cvtColor(self.hand_rgb, cv2.COLOR_BGR2RGB)
         pred = self.mrcnn.inference(img)
 
@@ -284,7 +299,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             det_str = "None"
 
         if det_str == "None":
-            return arm_depth_bbox
+            return None
 
         # Check if desired object is in view of camera
         def correct_class(detection):
@@ -292,7 +307,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         matching_detections = [d for d in det_str.split(";") if correct_class(d)]
         if not matching_detections:
-            return arm_depth_bbox
+            return None
 
         # Get object match with the highest score
         def get_score(detection):
@@ -302,13 +317,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         x1, y1, x2, y2 = [int(float(i)) for i in best_detection.split(",")[-4:]]
 
         # Create bbox mask from selected detection
-        # TODO: Make this less ugly
-        height, width = 480.0, 640.0
+        height, width = img.shape[:2]
         cx = np.mean([x1, x2]) / width
         cy = np.mean([y1, y2]) / height
-        y_min, y_max = int(y1 / 2), int(y2 / 2)
-        x_min, x_max = int(x1 / 2), int(x2 / 2)
-        arm_depth_bbox[y_min:y_max, x_min:x_max] = 1.0
 
         # Determine if bbox intersects with central crosshair
         crosshair_in_bbox = x1 < width // 2 < x2 and y1 < height // 2 < y2
@@ -326,7 +337,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 self.spot.loginfo("Lost lock-on!")
             self.locked_on_object_count = 0
 
-        return arm_depth_bbox
+        return x1, y1, x2, y2
 
     @staticmethod
     def format_detections(detections):
