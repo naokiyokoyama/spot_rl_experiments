@@ -82,6 +82,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.mrcnn_viz_pub = rospy.Publisher(
             MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
         )
+        self.obj_center_pixel = None
 
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
@@ -121,7 +122,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         :param base_action: np.array of velocities (lineaer, angular)
         :param arm_action: np.array of radians denoting how each joint is to be moved
-        :param grasp: whether to call the grasp_center_of_hand_depth() METHOD
+        :param grasp: whether to call the grasp_hand_depth() METHOD
         :param place: whether to call the open_gripper() method
         :param max_joint_movement_key: max allowable displacement of arm joints
         :return:
@@ -131,7 +132,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         if grasp:
             print("GRASP ACTION CALLED: Grasping center object!")
             # The following cmd is blocking
-            self.spot.grasp_center_of_hand_depth()
+            self.spot.grasp_hand_depth()
 
             # Just leave the object on the receptacle if desired
             if self.config.DONT_PICK_UP:
@@ -318,15 +319,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Create bbox mask from selected detection
         height, width = img.shape[:2]
-        cx = np.mean([x1, x2]) / width
-        cy = np.mean([y1, y2]) / height
+        cx = np.mean([x1, x2])
+        cy = np.mean([y1, y2])
+        self.obj_center_pixel = (cx, cy)
 
-        # Determine if bbox intersects with central crosshair
-        crosshair_in_bbox = x1 < width // 2 < x2 and y1 < height // 2 < y2
-
-        locked_on = crosshair_in_bbox and all(
-            [abs(c - 0.5) < self.config.CENTER_TOLERANCE for c in [cx, cy]]
-        )
+        locked_on = self.locked_on_object(x1, y1, x2, y2, height, width)
         if locked_on:
             self.locked_on_object_count += 1
             self.spot.loginfo(
@@ -338,6 +335,23 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             self.locked_on_object_count = 0
 
         return x1, y1, x2, y2
+
+    @staticmethod
+    def locked_on_object(x1, y1, x2, y2, height, width, radius=0.1):
+        cy, cx = height // 2, width // 2
+        # Locked on if the center of the image is in the bbox
+        if x1 < cx < x2 and y1 < cy < y2:
+            return True
+
+        pixel_radius = min(height, width) * radius
+        # Get pixel distance between bbox rectangle and the center of the image
+        # Stack Overflow question ID #5254838
+        dx = np.max([x1 - cx, 0, cx - x2])
+        dy = np.max([y1 - cy, 0, cy - y2])
+        bbox_dist = np.sqrt(dx ** 2 + dy ** 2)
+        locked_on = bbox_dist < pixel_radius
+
+        return locked_on
 
     @staticmethod
     def format_detections(detections):
