@@ -1,12 +1,16 @@
 import time
 
 import numpy as np
+from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
-from base_env import SpotBaseEnv
-from real_policy import NavPolicy
-from utils import construct_config, get_default_parser, nav_target_from_waypoints
+from spot_rl.real_policy import NavPolicy
+from spot_rl.utils.utils import (
+    construct_config,
+    get_default_parser,
+    nav_target_from_waypoints,
+)
 
 
 def main(spot):
@@ -38,7 +42,13 @@ def main(spot):
         say("Environment is done.")
         if args.dock:
             say("Docking robot")
-            spot.dock(dock_id=520, home_robot=True)
+            dock_start_time = time.time()
+            while time.time() - dock_start_time < 0.5:
+                try:
+                    spot.dock(dock_id=520, home_robot=True)
+                except:
+                    print("Dock not found... trying again")
+                    time.sleep(0.1)
     finally:
         spot.power_off()
 

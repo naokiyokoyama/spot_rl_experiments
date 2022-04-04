@@ -1,21 +1,23 @@
 import magnum as mn
-from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
-
 from base_env import SpotBaseEnv
 from gaze_env import SpotGazeEnv
 from place_env import SpotPlaceEnv
-from real_policy import GazePolicy, NavPolicy, PlacePolicy
-from utils import (
+from spot_wrapper.spot import Spot
+from spot_wrapper.utils import say
+
+from spot_rl.real_policy import GazePolicy, NavPolicy, PlacePolicy
+from spot_rl.utils.utils import (
     construct_config,
     get_default_parser,
     nav_target_from_waypoints,
     place_target_from_waypoints,
 )
 
-PLACE_TARGET = place_target_from_waypoints("pillar_bin")
+# PLACE_TARGET = place_target_from_waypoints("black_bin")
+# PLACE_DESTINATION = nav_target_from_waypoints("pillar")
+PLACE_TARGET = place_target_from_waypoints("gray_bin")
+PLACE_DESTINATION = nav_target_from_waypoints("gray_bin")
 GAZE_DESTINATION = nav_target_from_waypoints("suitcase")
-PLACE_DESTINATION = nav_target_from_waypoints("pillar")
 
 
 def main(spot):

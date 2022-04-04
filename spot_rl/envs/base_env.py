@@ -11,7 +11,7 @@ from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
 from spot_wrapper.utils import say
 
-from spot_ros_node import (
+from spot_rl.spot_ros_node import (
     MASK_RCNN_VIZ_TOPIC,
     MAX_DEPTH,
     MAX_GRIPPER_DEPTH,

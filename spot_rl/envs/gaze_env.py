@@ -1,11 +1,11 @@
 import cv2
 import numpy as np
+from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
-from base_env import SpotBaseEnv
-from real_policy import GazePolicy
-from utils import construct_config, get_default_parser
+from spot_rl.real_policy import GazePolicy
+from spot_rl.utils.utils import construct_config, get_default_parser
 
 DEBUG = False
 

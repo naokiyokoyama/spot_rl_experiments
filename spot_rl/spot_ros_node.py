@@ -15,7 +15,7 @@ from std_msgs.msg import (
     MultiArrayLayout,
 )
 
-from depth_map_utils import fill_in_multiscale
+from spot_rl.utils.depth_map_utils import fill_in_multiscale
 
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
 COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"
@@ -211,11 +211,12 @@ class SpotRosSubscriber:
     @staticmethod
     def filter_depth(depth_img, max_depth, whiten_black=False):
         filtered_depth_img = (
-            fill_in_multiscale(
-                depth_img.copy().astype(np.float32) * (max_depth / 255.0)
-            )[0]
+            fill_in_multiscale(depth_img.astype(np.float32) * (max_depth / 255.0))[0]
             * (255.0 / max_depth)
         ).astype(np.uint8)
+        # Recover pixels that weren't black before but were turned black by filtering
+        recovery_pixels = np.logical_and(depth_img != 0, filtered_depth_img == 0)
+        filtered_depth_img[recovery_pixels] = depth_img[recovery_pixels]
         if whiten_black:
             filtered_depth_img[filtered_depth_img == 0] = 255
         return filtered_depth_img

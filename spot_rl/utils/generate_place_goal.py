@@ -2,7 +2,7 @@ import magnum as mn
 import numpy as np
 from spot_wrapper.spot import Spot
 
-from base_env import SpotBaseEnv
+from spot_rl.envs.base_env import SpotBaseEnv
 
 EE_GRIPPER_OFFSET = [0.2, 0.0, 0.05]
 

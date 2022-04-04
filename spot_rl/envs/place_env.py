@@ -1,13 +1,15 @@
-import time
-
 import magnum as mn
 import numpy as np
+from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
 from spot_wrapper.utils import say
 
-from base_env import SpotBaseEnv
-from real_policy import PlacePolicy
-from utils import construct_config, get_default_parser, place_target_from_waypoints
+from spot_rl.real_policy import PlacePolicy
+from spot_rl.utils.utils import (
+    construct_config,
+    get_default_parser,
+    place_target_from_waypoints,
+)
 
 
 def main(spot):
