@@ -38,10 +38,24 @@ def obj_to_receptacle(object_name):
     return WAYPOINTS["object_targets"][object_name]
 
 
-def closest_clutter(x, y):
+def closest_clutter(x, y, clutter_blacklist=None):
+    if clutter_blacklist is None:
+        clutter_blacklist = []
     clutter_locations = [
-        np.array(nav_target_from_waypoints(w)[:2]) for w in WAYPOINTS["clutter"]
+        (np.array(nav_target_from_waypoints(w)[:2]), w)
+        for w in WAYPOINTS["clutter"]
+        if w not in clutter_blacklist
     ]
     xy = np.array([x, y])
-    dist_to_clutter = lambda i: np.linalg.norm(i - xy)
-    return sorted(clutter_locations, key=dist_to_clutter)[0]
+    dist_to_clutter = lambda i: np.linalg.norm(i[0] - xy)
+    _, waypoint_name = sorted(clutter_locations, key=dist_to_clutter)[0]
+    return waypoint_name, nav_target_from_waypoints(waypoint_name)
+
+
+def object_id_to_nav_waypoint(object_id):
+    place_nav_target_name = WAYPOINTS["object_targets"][object_id][1]
+    return place_nav_target_name, nav_target_from_waypoints(place_nav_target_name)
+
+
+def object_id_to_object_name(object_id):
+    return WAYPOINTS["object_targets"][object_id][0]

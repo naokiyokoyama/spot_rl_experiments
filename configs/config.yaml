@@ -2,7 +2,8 @@ WEIGHTS:
   NAV: "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
   GAZE: "weights/closer_seed2_speed0.0872665_1648513206.ckpt.14.pth"
   PLACE: "weights/speed_sweep_seed2_speed0.174533_1648669786.ckpt.94.pth"
-  MRCNN: "weights/model_0007499.pth"
+#  MRCNN: "weights/mask_rcnn_grayscale_0069999.pth"
+  MRCNN: "weights/mask_rcnn_grayscale_0052499.pth"
 
 DEVICE: "cuda:0"
 
@@ -11,11 +12,11 @@ CTRL_HZ: 2
 MAX_EPISODE_STEPS: 100
 
 # Nav env
-SUCCESS_DISTANCE: 0.30
-SUCCESS_ANGLE_DIST: 0.0872665
+SUCCESS_DISTANCE: 0.25
+SUCCESS_ANGLE_DIST: 5
 
 # Gaze env
-CENTER_TOLERANCE: 0.25
+CENTER_TOLERANCE: 0.3
 OBJECT_LOCK_ON_NEEDED: 2
 TARGET_OBJ_ID: 3
 DONT_PICK_UP: False
@@ -37,3 +38,6 @@ ARM_LOWER_LIMITS: [-45, -180, 0, 0, -90, 0]
 ARM_UPPER_LIMITS: [45, -45, 180, 0, 90, 0]
 JOINT_BLACKLIST: [3, 5] # joints we can't control "arm0.el0", "arm0.wr1"
 ACTUALLY_MOVE_ARM: True
+
+# Mask RCNN
+GRAYSCALE_MASK_RCNN: True

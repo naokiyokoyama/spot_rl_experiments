@@ -21,7 +21,7 @@ def main(spot):
     policy.reset()
     observations = env.reset()
     done = False
-    say("Starting episode")
+    env.say("Starting episode")
     try:
         while not done:
             action = policy.act(observations)
@@ -38,7 +38,7 @@ class SpotGazeEnv(SpotBaseEnv):
         self.target_obj_id = config.TARGET_OBJ_ID
         self.should_end = False
 
-    def reset(self):
+    def reset(self, *args, **kwargs):
         # Move arm to initial configuration
         cmd_id = self.spot.set_arm_joint_positions(
             positions=self.initial_arm_joint_angles, travel_time=1
@@ -65,7 +65,7 @@ class SpotGazeEnv(SpotBaseEnv):
         return observations, reward, done, info
 
     def get_observations(self):
-        arm_depth, arm_depth_bbox = self.get_gripper_images(self.target_obj_id)
+        arm_depth, arm_depth_bbox = self.get_gripper_images()
         if DEBUG:
             img = np.uint8(arm_depth_bbox * 255).reshape(*arm_depth_bbox.shape[:2])
             img2 = np.uint8(arm_depth * 255).reshape(*arm_depth.shape[:2])

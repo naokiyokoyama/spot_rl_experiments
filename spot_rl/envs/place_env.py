@@ -2,7 +2,6 @@ import magnum as mn
 import numpy as np
 from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
 
 from spot_rl.real_policy import PlacePolicy
 from spot_rl.utils.utils import (
@@ -32,7 +31,7 @@ def main(spot):
     policy.reset()
     observations = env.reset()
     done = False
-    say("Starting episode")
+    env.say("Starting episode")
     try:
         while not done:
             action = policy.act(observations)

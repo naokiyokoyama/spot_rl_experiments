@@ -9,14 +9,16 @@ import rospy
 from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
-from spot_wrapper.utils import say
+from std_msgs.msg import String
 
 from spot_rl.spot_ros_node import (
     MASK_RCNN_VIZ_TOPIC,
     MAX_DEPTH,
     MAX_GRIPPER_DEPTH,
+    TEXT_TO_SPEECH_TOPIC,
     SpotRosSubscriber,
 )
+from spot_rl.utils.utils import object_id_to_object_name
 
 
 def pad_action(action):
@@ -72,10 +74,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.grasp_attempted = False
         self.place_attempted = False
 
-        # Mask RCNN
+        # Mask RCNN / Gaze
         if mask_rcnn_weights is not None:
             self.mrcnn = MaskRcnnInference(
-                mask_rcnn_weights, score_thresh=0.5, device=mask_rcnn_device
+                mask_rcnn_weights, score_thresh=0.7, device=mask_rcnn_device
             )
         else:
             self.mrcnn = None
@@ -83,6 +85,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
         )
         self.obj_center_pixel = None
+        self.target_obj_id = None
+
+        # Text-to-speech
+        self.tts_pub = rospy.Publisher(TEXT_TO_SPEECH_TOPIC, String, queue_size=1)
 
         # Arrange Spot into initial configuration
         assert spot.spot_lease is not None, "Need motor control of Spot!"
@@ -98,12 +104,19 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             self.x, self.y, self.yaw
         )
 
+    def say(self, *args):
+        text = " ".join(args)
+        self.tts_pub.publish(String(text))
+
     def reset(self, *args, **kwargs):
         # Reset parameters
         self.num_steps = 0
         self.reset_ran = True
         self.should_end = False
         self.grasp_attempted = False
+        self.locked_on_object_count = 0
+        self.target_obj_id = None
+        self.obj_center_pixel = None
         self.place_attempted = False
 
         self.decompress_imgs()
@@ -129,10 +142,13 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
         assert base_action is not None or arm_action is not None, "Must provide action."
+        target_yaw = None
         if grasp:
             print("GRASP ACTION CALLED: Grasping center object!")
+            self.say("Grasping " + object_id_to_object_name(self.target_obj_id))
             # The following cmd is blocking
-            self.spot.grasp_hand_depth()
+            self.get_mrcnn_det()
+            self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
 
             # Just leave the object on the receptacle if desired
             if self.config.DONT_PICK_UP:
@@ -151,11 +167,14 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         else:
             if base_action is not None:
                 # Command velocities using the input action
-                x_vel, ang_vel = base_action
-                x_vel = np.clip(x_vel, -1, 1) * self.max_lin_vel
+                lin_vel, ang_vel = base_action
+                lin_vel = np.clip(lin_vel, -1, 1) * self.max_lin_vel
                 ang_vel = np.clip(ang_vel, -1, 1) * self.max_ang_vel
                 # No horizontal velocity
-                self.spot.set_base_velocity(x_vel, 0.0, ang_vel, 1 / self.ctrl_hz)
+                self.spot.set_base_velocity(
+                    lin_vel, 0.0, ang_vel * 1.4, 1 / self.ctrl_hz
+                )
+                target_yaw = wrap_heading(self.yaw + ang_vel * 1 / self.ctrl_hz)
 
             if arm_action is not None:
                 arm_action = rescale_actions(arm_action)
@@ -170,9 +189,13 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                     _ = self.spot.set_arm_joint_positions(
                         positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
                     )
-        # Pause until enough time has passed during this step
+        # Spin until enough time has passed during this step
         while time.time() < self.last_execution + 1 / self.ctrl_hz:
-            pass
+            if target_yaw is not None:
+                remaining_time = self.last_execution + 1 / self.ctrl_hz - time.time()
+                # Prevent overshooting of angular velocity
+                if abs(wrap_heading(self.yaw - target_yaw)) < np.deg2rad(3):
+                    self.spot.set_base_velocity(lin_vel, 0, 0, remaining_time)
         env_hz = 1 / (time.time() - self.last_execution)
         self.last_execution = time.time()
 
@@ -229,11 +252,15 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         # Get rho theta observation
         curr_xy = np.array([self.x, self.y], dtype=np.float32)
         rho = np.linalg.norm(curr_xy - goal_xy)
-        theta = np.arctan2(goal_xy[1] - self.y, goal_xy[0] - self.x) - self.yaw
-        rho_theta = np.array([rho, wrap_heading(theta)], dtype=np.float32)
+        theta = wrap_heading(
+            np.arctan2(goal_xy[1] - self.y, goal_xy[0] - self.x) - self.yaw
+        )
+        rho_theta = np.array([rho, theta], dtype=np.float32)
 
         # Get goal heading observation
-        goal_heading_ = -np.array([goal_heading - self.yaw], dtype=np.float32)
+        goal_heading_ = -np.array(
+            [wrap_heading(goal_heading - self.yaw)], dtype=np.float32
+        )
         observations["target_point_goal_gps_and_compass_sensor"] = rho_theta
         observations["goal_heading"] = goal_heading_
 
@@ -253,11 +280,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return joints
 
     def get_gripper_images(
-        self, target_obj_id, left_crop=124, right_crop=60, new_width=228, new_height=240
+        self, left_crop=124, right_crop=60, new_width=228, new_height=240
     ):
         arm_depth = self.hand_depth.copy()
         orig_height, orig_width = arm_depth.shape[:2]
-        obj_bbox = self.get_mrcnn_det(target_obj_id)
+        obj_bbox = self.get_mrcnn_det()
 
         # Crop out black vertical bars on the left and right edges of aligned depth img
         arm_depth = arm_depth[:, left_crop:-right_crop]
@@ -286,23 +313,41 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         return arm_depth, arm_depth_bbox
 
-    def get_mrcnn_det(self, target_obj_id):
-        img = cv2.cvtColor(self.hand_rgb, cv2.COLOR_BGR2RGB)
+    def get_mrcnn_det(self):
+        img = self.hand_rgb.copy()
+        if self.config.GRAYSCALE_MASK_RCNN:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         pred = self.mrcnn.inference(img)
 
-        if len(pred["instances"]) > 0:
-            det_str = self.format_detections(pred["instances"])
+        detections = pred["instances"]
+        if len(detections) > 0:
+            det_str = self.format_detections(detections)
             viz_img = self.mrcnn.visualize_inference(img, pred)
             img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
             self.mrcnn_viz_pub.publish(img_msg)
             print("[mask_rcnn]: " + det_str)
-        else:
-            det_str = "None"
 
-        if det_str == "None":
+            if self.target_obj_id is None:
+                most_confident_class_id = None
+                most_confident_score = None
+                for det_idx in range(len(detections)):
+                    class_id = detections.pred_classes[det_idx]
+                    score = detections.scores[det_idx]
+                    if most_confident_score is None or score > most_confident_score:
+                        most_confident_score = score
+                        most_confident_class_id = class_id.item()
+
+                self.target_obj_id = most_confident_class_id
+                self.say(
+                    "Now targeting " + object_id_to_object_name(self.target_obj_id)
+                )
+        else:
             return None
 
         # Check if desired object is in view of camera
+        target_obj_id = self.target_obj_id
+
         def correct_class(detection):
             return int(detection.split(",")[0]) == target_obj_id
 
@@ -413,5 +458,5 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
     def power_robot(self):
         self.spot.power_on()
-        say("Standing up")
+        self.say("Standing up")
         self.spot.blocking_stand()

@@ -28,22 +28,21 @@ def main(spot):
     env.power_robot()
     if args.waypoint is not None:
         goal_x, goal_y, goal_heading = nav_target_from_waypoints(args.waypoint)
+        say(f"Navigating to {args.waypoint}")
     else:
         assert args.goal is not None
         goal_x, goal_y, goal_heading = [float(i) for i in args.goal.split(",")]
     observations = env.reset((goal_x, goal_y), goal_heading)
     done = False
-    say("Starting episode")
-    time.sleep(2)
+    time.sleep(1)
     try:
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(base_action=action)
-        say("Environment is done.")
         if args.dock:
-            say("Docking robot")
+            env.say("Executing automatic docking")
             dock_start_time = time.time()
-            while time.time() - dock_start_time < 0.5:
+            while time.time() - dock_start_time < 2:
                 try:
                     spot.dock(dock_id=520, home_robot=True)
                 except:
@@ -59,7 +58,7 @@ class SpotNavEnv(SpotBaseEnv):
         self.goal_xy = None
         self.goal_heading = None
         self.succ_distance = config.SUCCESS_DISTANCE
-        self.succ_angle = config.SUCCESS_ANGLE_DIST
+        self.succ_angle = np.deg2rad(config.SUCCESS_ANGLE_DIST)
 
     def reset(self, goal_xy, goal_heading):
         self.goal_xy = np.array(goal_xy, dtype=np.float32)

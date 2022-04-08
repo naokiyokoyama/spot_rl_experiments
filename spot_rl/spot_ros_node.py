@@ -8,11 +8,13 @@ import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
+from spot_wrapper.utils import say
 from std_msgs.msg import (
     ByteMultiArray,
     Float32MultiArray,
     MultiArrayDimension,
     MultiArrayLayout,
+    String,
 )
 
 from spot_rl.utils.depth_map_utils import fill_in_multiscale
@@ -20,6 +22,7 @@ from spot_rl.utils.depth_map_utils import fill_in_multiscale
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
 COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"
 ROBOT_STATE_TOPIC = "/robot_state"
+TEXT_TO_SPEECH_TOPIC = "/text_to_speech"
 SRC2MSG = {
     SpotCamIds.FRONTLEFT_DEPTH: ByteMultiArray,
     SpotCamIds.FRONTRIGHT_DEPTH: ByteMultiArray,
@@ -29,7 +32,7 @@ SRC2MSG = {
 MAX_DEPTH = 3.5
 MAX_GRIPPER_DEPTH = 1.7
 
-NAV_POSE_BUFFER_LEN = 50
+NAV_POSE_BUFFER_LEN = 3
 
 
 class SpotRosPublisher:
@@ -268,19 +271,27 @@ class SpotRosProprioceptionPublisher:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--proprioception", action="store_true")
+    parser.add_argument("-t", "--text-to-speech", action="store_true")
     args = parser.parse_args()
 
-    if args.proprioception:
-        name = "spot_ros_proprioception_node"
-        cls = SpotRosProprioceptionPublisher
+    if args.text_to_speech:
+        tts_callback = lambda msg: say(msg.data)
+        rospy.init_node("spot_ros_tts_node", disable_signals=True)
+        rospy.Subscriber(TEXT_TO_SPEECH_TOPIC, String, tts_callback, queue_size=1)
+        rospy.loginfo("[spot_ros_tts_node]: Listening for text to dictate.")
+        rospy.spin()
     else:
-        name = "spot_ros_node"
-        cls = SpotRosPublisher
+        if args.proprioception:
+            name = "spot_ros_proprioception_node"
+            cls = SpotRosProprioceptionPublisher
+        else:
+            name = "spot_ros_node"
+            cls = SpotRosPublisher
 
-    spot = Spot(name)
-    srn = cls(spot)
-    while not rospy.is_shutdown():
-        srn.publish_msgs()
+        spot = Spot(name)
+        srn = cls(spot)
+        while not rospy.is_shutdown():
+            srn.publish_msgs()
 
 
 if __name__ == "__main__":
