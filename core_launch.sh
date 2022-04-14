@@ -3,7 +3,7 @@ echo "Killing all tmux sessions..."
 tmux kill-server
 sleep 2
 echo "Starting roscore tmux..."
-tmux new -s roscore -d '/home/spot/miniconda3/envs/spot_ros/bin/roscore'
+tmux new -s roscore -d '$CONDA_PREFIX/bin/roscore'
 sleep 1
 echo "Starting other tmux nodes"
 tmux new -s headless_estop -d '$CONDA_PREFIX/bin/python -m spot_wrapper.headless_estop'
