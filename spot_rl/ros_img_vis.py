@@ -4,9 +4,8 @@ from collections import deque
 import cv2
 import numpy as np
 import rospy
-from spot_wrapper.utils import resize_to_tallest
-
 from spot_ros_node import SpotRosSubscriber
+from spot_wrapper.utils import resize_to_tallest
 
 
 class SpotRosVisualizer(SpotRosSubscriber):
@@ -21,7 +20,7 @@ class SpotRosVisualizer(SpotRosSubscriber):
             return
 
         # Gather latest images
-        self.decompress_imgs()
+        self.uncompress_imgs()
         orig_msgs = [self.front_depth, self.hand_depth[:, 124:-60], self.hand_rgb]
         processed_msgs = [
             self.filter_depth(self.front_depth, max_depth=3.5, whiten_black=True),

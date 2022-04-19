@@ -1,9 +1,8 @@
 import cv2
 import numpy as np
-from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
 
+from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.real_policy import GazePolicy
 from spot_rl.utils.utils import construct_config, get_default_parser
 
@@ -31,14 +30,7 @@ def main(spot):
 
 
 class SpotGazeEnv(SpotBaseEnv):
-    def __init__(self, config, spot: Spot, **kwargs):
-        super().__init__(config, spot, **kwargs)
-
-        self.locked_on_object_count = 0
-        self.target_obj_id = config.TARGET_OBJ_ID
-        self.should_end = False
-
-    def reset(self, *args, **kwargs):
+    def reset(self, target_obj_id=None, *args, **kwargs):
         # Move arm to initial configuration
         cmd_id = self.spot.set_arm_joint_positions(
             positions=self.initial_arm_joint_angles, travel_time=1
@@ -46,11 +38,12 @@ class SpotGazeEnv(SpotBaseEnv):
         self.spot.block_until_arm_arrives(cmd_id, timeout_sec=1)
         self.spot.open_gripper()
 
-        observations = super().reset()
+        observations = super().reset(target_obj_id=target_obj_id, *args, **kwargs)
 
         # Reset parameters
         self.locked_on_object_count = 0
-        self.target_obj_id = self.config.TARGET_OBJ_ID
+        if target_obj_id is None:
+            self.target_obj_id = self.config.TARGET_OBJ_ID
 
         return observations
 
