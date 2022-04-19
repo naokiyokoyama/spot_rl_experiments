@@ -3,11 +3,6 @@ The code here should be by the Core only. This will relay any received commands 
 to the robot from the Core via Ethernet.
 """
 
-import argparse
-import os.path as osp
-import subprocess
-import time
-
 import numpy as np
 import rospy
 from spot_wrapper.spot import Spot
@@ -33,60 +28,63 @@ class RemoteSpotListener:
         # This subscriber will kill the listener
         rospy.Subscriber(KILL_REMOTE_ROBOT, Bool, self.kill_remote_robot, queue_size=1)
 
+        self.off = False
+
     def execute_cmd(self, msg):
+        if self.off:
+            return
+
         values = msg.data.split(";")
         method_name, args = values[0], values[1:]
         method = eval("self.spot." + method_name)
-        method(*[eval(i) for i in args])
+
+        cmd_str = f"self.spot.{method_name}({args if args else ''})"
+        rospy.loginfo(f"[RemoteSpotListener]: Executing: {cmd_str}")
+
+        decoded_args = [eval(i) for i in args]
+        args_vec = [i for i in decoded_args if not isinstance(i, dict)]
+        kwargs = [i for i in decoded_args if isinstance(i, dict)]
+        assert len(kwargs) <= 1
+        if not kwargs:
+            kwargs = {}
+        else:
+            kwargs = kwargs[0]
+        method(*args_vec, **kwargs)
         self.pub.publish(True)
 
     def kill_remote_robot(self, msg):
-        raise RuntimeError
+        rospy.loginfo(f"[RemoteSpotListener]: Powering robot off...")
+        self.spot.power_off()
+        self.off = True
+        rospy.signal_shutdown("Robot was powered off.")
+        exit()
 
 
 class RemoteSpotMaster:
     def __init__(self):
+        rospy.init_node("RemoteSpotMaster", disable_signals=True)
         # This subscriber executes received cmds
         rospy.Subscriber(INIT_REMOTE_ROBOT, Bool, self.init_remote_robot, queue_size=1)
         self.remote_robot_killer = rospy.Publisher(
             KILL_REMOTE_ROBOT, Bool, queue_size=1
         )
+        self.lease = None
+        self.remote_robot_listener = None
+        rospy.loginfo("[RemoteSpotMaster]: Listening for requests to start robot...")
 
     def init_remote_robot(self, msg):
-        self.remote_robot_killer.publish(True)
-        time.sleep(1)
-        # Kill any surviving listeners, if they exist...
-        try:
-            subprocess.check_call(
-                "tmux kill-session -t remote_robot_listener", shell=True
-            )
-        except:
-            pass
+        if self.lease is not None:
+            if not self.remote_robot_listener.off:
+                self.remote_robot_listener.power_off()
+            self.lease.__exit__(None, None, None)
+            self.remote_robot_listener = None
 
-        # Run this script again in a separate tmux, but not as master
-        python = "/home/spot/anaconda3/envs/spot_ros/bin/python"
-        if not osp.isfile(python):
-            python = python.replace("anaconda3", "miniconda3")
-            assert osp.isfile(python), "Can't find python interpreter!"
-        this_file = osp.abspath(__file__)
-        subprocess.check_call(
-            f"tmux new -s remote_robot_listener -d '{python} {this_file}'", shell=True
-        )
+        spot = Spot("RemoteSpotListener")
+        rospy.loginfo("[RemoteSpotMaster]: Starting robot!")
+        self.lease = spot.get_lease(hijack=True)
+        self.remote_robot_listener = RemoteSpotListener(spot)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--master", action="store_true")
-    is_master = parser.parse_args().master
-
-    if is_master:
-        RemoteSpotMaster()
-        rospy.spin()
-    else:
-        spot = Spot("RemoteSpotListener")
-        with spot.get_lease(hijack=True):
-            try:
-                rsl = RemoteSpotListener(spot)
-                rospy.spin()
-            finally:
-                spot.power_off()
+    RemoteSpotMaster()
+    rospy.spin()

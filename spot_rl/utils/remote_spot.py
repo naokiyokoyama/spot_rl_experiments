@@ -14,6 +14,7 @@ The message relaying is executed with ROS topic publishing / subscribing.
 Very hacky.
 """
 
+import json
 import time
 
 import rospy
@@ -23,12 +24,12 @@ from std_msgs.msg import Bool, String
 ROBOT_CMD_TOPIC = "/remote_robot_cmd"
 CMD_ENDED_TOPIC = "/remote_robot_cmd_ended"
 KILL_REMOTE_ROBOT = "/kill_remote_robot"
+INIT_REMOTE_ROBOT = "/init_remote_robot"
 
 
 class RemoteSpot(Spot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         # This determines whether the Core has confirmed the last cmd has ended
         self.cmd_ended = False
         # This subscriber updates the above attribute
@@ -40,11 +41,19 @@ class RemoteSpot(Spot):
             KILL_REMOTE_ROBOT, Bool, queue_size=1
         )
 
+        # This publisher starts the remote robot
+        self.init_robot = rospy.Publisher(INIT_REMOTE_ROBOT, Bool, queue_size=1)
+
     def cmd_ended_callback(self, msg):
         self.cmd_ended = msg.data
 
-    def send_cmd(self, cmd_name, *args):
-        cmd_with_args_str = ";".join([cmd_name] + [str(i) for i in args])
+    def send_cmd(self, cmd_name, *args, **kwargs):
+        cmd_with_args_str = f"{cmd_name}"
+        if args:
+            cmd_with_args_str += ";" + ";".join([str(i) for i in args])
+        if kwargs:
+            cmd_with_args_str += ";" + str(kwargs)
+
         self.pub.publish(cmd_with_args_str)
 
     @staticmethod
@@ -87,25 +96,19 @@ class RemoteSpot(Spot):
     def open_gripper(self):
         self.send_cmd("open_gripper")
 
-    def set_base_velocity(
-        self, x_vel, y_vel, ang_vel, vel_time, disable_obstacle_avoidance=False
-    ):
-        self.send_cmd(
-            "set_base_velocity",
-            x_vel,
-            y_vel,
-            ang_vel,
-            vel_time,
-            disable_obstacle_avoidance,
-        )
+    def set_base_velocity(self, *args, **kwargs):
+        self.send_cmd("set_base_velocity", *args, **kwargs)
 
     def power_on(self, *args, **kwargs):
+        self.init_robot.publish(True)
+        time.sleep(5)
         self.send_cmd("power_on")
-        return self.blocking(20)
+        return self.blocking(timeout=20)
 
     def blocking_stand(self, *args, **kwargs):
-        # Warning: won't block!
         self.send_cmd("blocking_stand")
+        return self.blocking(timeout=10)
 
     def power_off(self, *args, **kwargs):
+        print("[remote_spot.py]: Asking robot to power off...")
         self.remote_robot_killer.publish(True)
