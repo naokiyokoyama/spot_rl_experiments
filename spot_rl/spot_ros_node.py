@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Vector3
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
 from spot_wrapper.utils import say
@@ -19,6 +20,7 @@ from std_msgs.msg import (
 
 from spot_rl.utils.depth_map_utils import fill_in_multiscale
 
+ROBOT_VEL_TOPIC = "/spot_cmd_velocities"
 MASK_RCNN_VIZ_TOPIC = "/mask_rcnn_visualizations"
 COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"
 ROBOT_STATE_TOPIC = "/robot_state"
@@ -106,18 +108,6 @@ class SpotRosPublisher:
         )
         self.last_publish = time.time()
 
-    @staticmethod
-    def filter_depth(img, max_depth):
-        img = scale_depth_img(img, max_depth=max_depth)
-        img = np.uint8(img * 255.0)
-        # Blur
-        for _ in range(5):
-            filtered = cv2.medianBlur(img, 19)
-            filtered[img > 0] = img[img > 0]
-            img = filtered
-
-        return img
-
 
 class SpotRosSubscriber:
     def __init__(self, node_name):
@@ -172,7 +162,7 @@ class SpotRosSubscriber:
         self.compressed_imgs_msg = msg
         self.updated = True
 
-    def decompress_imgs(self):
+    def uncompress_imgs(self):
         assert self.compressed_imgs_msg is not None, "No compressed imgs received!"
         self.lock = True
         byte_data = (np.array(self.compressed_imgs_msg.data) + 128).astype(np.uint8)
@@ -212,7 +202,7 @@ class SpotRosSubscriber:
         self.current_arm_pose = msg.data[3:]
 
     @staticmethod
-    def filter_depth(depth_img, max_depth, whiten_black=False):
+    def filter_depth(depth_img, max_depth, whiten_black=True):
         filtered_depth_img = (
             fill_in_multiscale(depth_img.astype(np.float32) * (max_depth / 255.0))[0]
             * (255.0 / max_depth)
@@ -268,10 +258,26 @@ class SpotRosProprioceptionPublisher:
             self.last_publish = time.time()
 
 
+class SpotVelocitySubscriber:
+    def __init__(self, spot):
+        self.spot = spot
+        rospy.init_node("spot_ros_velocity_node", disable_signals=True)
+        rospy.Subscriber(
+            ROBOT_VEL_TOPIC, Float32MultiArray, self.vel_callback, queue_size=1
+        )
+        rospy.loginfo("[spot_ros_velocity_node]: Listening for velocity commands.")
+        rospy.spin()
+
+    def vel_callback(self, msg):
+        lin_vel, hor_vel, ang_vel, duration = msg.data
+        self.spot.set_base_velocity(lin_vel, hor_vel, ang_vel, duration)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--proprioception", action="store_true")
     parser.add_argument("-t", "--text-to-speech", action="store_true")
+    parser.add_argument("-v", "--velocity", action="store_true")
     args = parser.parse_args()
 
     if args.text_to_speech:
@@ -284,14 +290,18 @@ def main():
         if args.proprioception:
             name = "spot_ros_proprioception_node"
             cls = SpotRosProprioceptionPublisher
+        elif args.velocity:
+            name = "spot_ros_velocity_node"
+            cls = SpotVelocitySubscriber
         else:
             name = "spot_ros_node"
             cls = SpotRosPublisher
 
         spot = Spot(name)
         srn = cls(spot)
-        while not rospy.is_shutdown():
-            srn.publish_msgs()
+        if not args.velocity:
+            while not rospy.is_shutdown():
+                srn.publish_msgs()
 
 
 if __name__ == "__main__":

@@ -228,7 +228,8 @@ class MixerPolicy(RealPolicy):
                 None,
                 None,
                 self.not_done,
-                deterministic=False,
+                # deterministic=False,
+                deterministic=True,
             )
 
         # GPU/CPU torch tensor -> numpy
@@ -255,14 +256,12 @@ class MixerPolicy(RealPolicy):
         for v in corrective_actions.values():
             for vv in v:
                 corrective_actions_list.append(f"{vv:.3f}")
-        # print("raw:", actions)
         print("moe:", ", ".join(activated_experts + corrective_actions_list))
 
         self.moe_actions = actions
         action_dict = self.policy.action_to_dict(actions, 0)
         step_action = action_dict["action"]["action"].numpy()
         arm_action, base_action = np.split(step_action, [4])
-        # print("final:", arm_action, base_action)
 
         return base_action, arm_action
 

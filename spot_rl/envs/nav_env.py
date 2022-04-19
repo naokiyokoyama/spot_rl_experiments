@@ -1,10 +1,9 @@
 import time
 
 import numpy as np
-from base_env import SpotBaseEnv
 from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
 
+from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.real_policy import NavPolicy
 from spot_rl.utils.utils import (
     construct_config,
@@ -28,7 +27,7 @@ def main(spot):
     env.power_robot()
     if args.waypoint is not None:
         goal_x, goal_y, goal_heading = nav_target_from_waypoints(args.waypoint)
-        say(f"Navigating to {args.waypoint}")
+        env.say(f"Navigating to {args.waypoint}")
     else:
         assert args.goal is not None
         goal_x, goal_y, goal_heading = [float(i) for i in args.goal.split(",")]

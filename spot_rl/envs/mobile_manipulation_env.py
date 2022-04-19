@@ -3,14 +3,11 @@ from collections import Counter
 
 import magnum as mn
 import numpy as np
-from base_env import SpotBaseEnv
 from gaze_env import SpotGazeEnv
-from nav_env import SpotNavEnv
-from place_env import SpotPlaceEnv
-from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
+from spot_wrapper.spot import Spot, wrap_heading
 
-from spot_rl.real_policy import GazePolicy, NavPolicy, PlacePolicy
+from spot_rl.envs.base_env import SpotBaseEnv
+from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
 from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,
@@ -21,21 +18,38 @@ from spot_rl.utils.utils import (
     place_target_from_waypoints,
 )
 
-NUM_OBJECTS = 6
+CLUTTER_AMOUNTS = {
+    "whiteboard": 3,
+    "black_box": 2,
+    "white_box": 3,
+}
+NUM_OBJECTS = np.sum(list(CLUTTER_AMOUNTS.values()))
 
 
 def main(spot):
     parser = get_default_parser()
+    parser.add_argument("-m", "--use-mixer", action="store_true")
     args = parser.parse_args()
     config = construct_config(args.opts)
-    policy = SequentialExperts(
-        config.WEIGHTS.NAV,
-        config.WEIGHTS.GAZE,
-        config.WEIGHTS.PLACE,
-        device=config.DEVICE,
-    )
+    if args.use_mixer:
+        policy = MixerPolicy(
+            config.WEIGHTS.MIXER,
+            config.WEIGHTS.NAV,
+            config.WEIGHTS.GAZE,
+            config.WEIGHTS.PLACE,
+            device=config.DEVICE,
+        )
+        env_class = SpotMobileManipulationBaseEnv
+    else:
+        policy = SequentialExperts(
+            config.WEIGHTS.NAV,
+            config.WEIGHTS.GAZE,
+            config.WEIGHTS.PLACE,
+            device=config.DEVICE,
+        )
+        env_class = SpotMobileManipulationSeqEnv
 
-    env = SpotMobileManipulationSeqEnv(
+    env = env_class(
         config,
         spot,
         mask_rcnn_weights=config.WEIGHTS.MRCNN,
@@ -47,7 +61,10 @@ def main(spot):
     try:
         for trip_idx in range(NUM_OBJECTS + 1):
             if trip_idx < NUM_OBJECTS:
-                clutter_blacklist = [i for i in WAYPOINTS["clutter"] if count[i] >= 2]
+                # 2 objects per receptacle
+                clutter_blacklist = [
+                    i for i in WAYPOINTS["clutter"] if count[i] >= CLUTTER_AMOUNTS[i]
+                ]
                 waypoint_name, waypoint = closest_clutter(
                     env.x, env.y, clutter_blacklist=clutter_blacklist
                 )
@@ -59,22 +76,30 @@ def main(spot):
             observations = env.reset(waypoint=waypoint)
             policy.reset()
             done = False
-            expert = Tasks.NAV
+            if args.use_mixer:
+                expert = None
+            else:
+                expert = Tasks.NAV
             while not done:
-                base_action, arm_action = policy.act(observations, expert=expert)
+                if expert is None:
+                    base_action, arm_action = policy.act(observations)
+                else:
+                    base_action, arm_action = policy.act(observations, expert=expert)
                 observations, _, done, info = env.step(
                     base_action=base_action, arm_action=arm_action
                 )
-                expert = info["correct_skill"]
+                if expert is not None:
+                    expert = info["correct_skill"]
+
                 if trip_idx >= NUM_OBJECTS and expert != Tasks.NAV:
                     break
 
                 # Print info
-                stats = [f"{k}: {v}" for k, v in info.items()]
-                print("\t".join(stats))
+                # stats = [f"{k}: {v}" for k, v in info.items()]
+                # print("\t".join(stats))
 
                 # We reuse nav, so we have to reset it before we use it again.
-                if expert != Tasks.NAV:
+                if expert is not None and expert != Tasks.NAV:
                     policy.nav_policy.reset()
 
         env.say("Executing automatic docking")
@@ -124,9 +149,9 @@ class SequentialExperts:
         return base_action, arm_action
 
 
-class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
+class SpotMobileManipulationBaseEnv(SpotGazeEnv):
     def __init__(self, config, spot: Spot, **kwargs):
-        SpotBaseEnv.__init__(self, config, spot, **kwargs)
+        super().__init__(config, spot, **kwargs)
 
         # Nav
         self.goal_xy = None
@@ -147,6 +172,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
 
         # General
         self.max_episode_steps = 1000
+        self.navigating_to_place = False
 
     def reset(self, waypoint=None, *args, **kwargs):
         # Move arm to initial configuration (w/ gripper open)
@@ -166,26 +192,67 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv, SpotPlaceEnv, SpotBaseEnv):
         # Place
         self.place_target = mn.Vector3(-1.0, -1.0, -1.0)
 
+        # General
+        self.navigating_to_place = False
+
         return SpotBaseEnv.reset(self)
 
     def step(self, *args, **kwargs):
-        return SpotBaseEnv.step(self, *args, **kwargs)
+        _, xy_dist, z_dist = self.get_place_distance()
+        place = xy_dist < self.config.SUCC_XY_DIST and z_dist < self.config.SUCC_Z_DIST
+        grasp = (
+            self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED
+            and not self.grasp_attempted
+            and 0.2 < self.target_object_distance < 1.0
+        )
+        if (
+            not grasp
+            and self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED
+        ):
+            print(f"Can't grasp: object is {self.target_object_distance} m far")
+
+        if self.grasp_attempted:
+            max_joint_movement_key = "MAX_JOINT_MOVEMENT_2"
+        else:
+            max_joint_movement_key = "MAX_JOINT_MOVEMENT"
+
+        observations, reward, done, info = SpotBaseEnv.step(
+            self,
+            grasp=grasp,
+            place=place,
+            max_joint_movement_key=max_joint_movement_key,
+            *args,
+            **kwargs,
+        )
+
+        if self.grasp_attempted and not self.navigating_to_place:
+            # Determine where to go based on what object we've just grasped
+            waypoint_name, waypoint = object_id_to_nav_waypoint(self.target_obj_id)
+            self.say("Navigating to " + waypoint_name)
+            self.place_target = place_target_from_waypoints(waypoint_name)
+            self.goal_xy, self.goal_heading = (waypoint[:2], waypoint[2])
+            self.navigating_to_place = True
+
+        return observations, reward, done, info
 
     def get_observations(self):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
+        rho = observations["target_point_goal_gps_and_compass_sensor"][0]
+        goal_heading = observations["goal_heading"][0]
+        self.use_mrcnn = rho < 1.8 and abs(goal_heading) < np.deg2rad(60)
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
 
         return observations
 
+    def get_success(self, observations):
+        return self.place_attempted
 
-class SpotMobileManipulationSeqEnv(
-    SpotMobileManipulationBaseEnv, SpotGazeEnv, SpotPlaceEnv
-):
+
+class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     def __init__(self, config, spot, **kwargs):
         super().__init__(config, spot, **kwargs)
         self.current_task = Tasks.NAV
-        self.nav_succ_count = 0
 
     def reset(self, *args, **kwargs):
         observations = super().reset(*args, **kwargs)
@@ -195,64 +262,28 @@ class SpotMobileManipulationSeqEnv(
         return observations
 
     def step(self, *args, **kwargs):
-        if self.current_task == Tasks.PLACE:
-            _, xy_dist, z_dist = self.get_place_distance()
-            place = (
-                xy_dist < self.config.SUCC_XY_DIST and z_dist < self.config.SUCC_Z_DIST
-            )
-        else:
-            place = False
-
-        grasp = (
-            self.current_task == Tasks.GAZE
-            and self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED
-        )
-
-        if self.current_task == Tasks.PLACE:
-            max_joint_movement_key = "MAX_JOINT_MOVEMENT_2"
-        else:
-            max_joint_movement_key = "MAX_JOINT_MOVEMENT"
-
-        observations, reward, done, info = super().step(
-            grasp=grasp,
-            place=place,
-            max_joint_movement_key=max_joint_movement_key,
-            *args,
-            **kwargs,
-        )
+        pre_step_navigating_to_place = self.navigating_to_place
+        observations, reward, done, info = super().step(*args, **kwargs)
 
         if self.current_task == Tasks.NAV and self.get_nav_success(
             observations, self.succ_distance, self.succ_angle
         ):
-            # Make the robot stop moving
-            self.spot.set_base_velocity(0.0, 0.0, 0.0, 1 / self.ctrl_hz)
             if not self.grasp_attempted:
-                # Move arm to initial configuration
-                cmd_id = self.spot.set_arm_joint_positions(
-                    positions=self.initial_arm_joint_angles, travel_time=1
-                )
-                self.spot.block_until_arm_arrives(cmd_id, timeout_sec=1)
                 self.current_task = Tasks.GAZE
                 self.target_obj_id = None
             else:
                 self.current_task = Tasks.PLACE
                 self.say("Starting place")
 
-        if self.current_task == Tasks.GAZE and self.grasp_attempted:
+        if not pre_step_navigating_to_place and self.navigating_to_place:
+            # This means that the Gaze task has just ended
             self.current_task = Tasks.NAV
-            # Determine where to go based on what object we're holding
-            waypoint_name, waypoint = object_id_to_nav_waypoint(self.target_obj_id)
-            self.say("Navigating to " + waypoint_name)
-            self.place_target = place_target_from_waypoints(waypoint_name)
-            self.goal_xy, self.goal_heading = (waypoint[:2], waypoint[2])
 
         info["correct_skill"] = self.current_task
-        print("correct_skill", self.current_task)
+
+        self.use_mrcnn = self.current_task == Tasks.GAZE
 
         return observations, reward, done, info
-
-    def get_success(self, observations):
-        return self.place_attempted
 
 
 if __name__ == "__main__":

@@ -1,19 +1,21 @@
 WEIGHTS:
   NAV: "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
-  GAZE: "weights/closer_seed2_speed0.0872665_1648513206.ckpt.14.pth"
+  GAZE: "weights/gaze_normal_32_seed300_1649708927_ckpt.49.pth"
   PLACE: "weights/speed_sweep_seed2_speed0.174533_1648669786.ckpt.94.pth"
-#  MRCNN: "weights/mask_rcnn_grayscale_0069999.pth"
-  MRCNN: "weights/mask_rcnn_grayscale_0052499.pth"
+  MIXER: "weights/sweep_9_RT_False_WC_0_NS_128_SD_300_1650155660_ckpt_12.pth"
+  MRCNN: "weights/ikea_apricot_output_model_0087499.pth"
+  DEBLURGAN: "weights/fpn_mobilenet.h5"
 
 DEVICE: "cuda:0"
 
 # General env params
-CTRL_HZ: 2
+CTRL_HZ: 2.0
 MAX_EPISODE_STEPS: 100
 
 # Nav env
-SUCCESS_DISTANCE: 0.25
+SUCCESS_DISTANCE: 0.3
 SUCCESS_ANGLE_DIST: 5
+DISABLE_OBSTACLE_AVOIDANCE: True
 
 # Gaze env
 CENTER_TOLERANCE: 0.3
@@ -41,3 +43,6 @@ ACTUALLY_MOVE_ARM: True
 
 # Mask RCNN
 GRAYSCALE_MASK_RCNN: True
+USE_DEBLURGAN: True
+# After this many time steps of not seeing the current target object, we become open to looking for new ones
+FORGET_TARGET_OBJECT_STEPS: 15

@@ -75,51 +75,6 @@ class SpotPlaceEnv(SpotBaseEnv):
 
         return observations
 
-    def get_place_sensor(self):
-        # The place goal should be provided relative to the local robot frame given that
-        # the robot is at the place receptacle
-        gripper_T_base = self.get_in_gripper_tf()
-        base_T_gripper = gripper_T_base.inverted()
-        base_frame_place_target = self.get_base_frame_place_target()
-        hab_place_target = self.spot2habitat_translation(base_frame_place_target)
-        gripper_pos = base_T_gripper.transform_point(hab_place_target)
-
-        return gripper_pos
-
-    def get_base_frame_place_target(self):
-        if self.place_target_is_local:
-            base_frame_place_target = self.place_target
-        else:
-            base_frame_place_target = self.get_target_in_base_frame(self.place_target)
-        return base_frame_place_target
-
-    def get_place_distance(self):
-        gripper_T_base = self.get_in_gripper_tf()
-        base_frame_gripper_pos = np.array(gripper_T_base.translation)
-        base_frame_place_target = self.get_base_frame_place_target()
-        hab_place_target = self.spot2habitat_translation(base_frame_place_target)
-        hab_place_target = np.array(hab_place_target)
-        place_dist = np.linalg.norm(hab_place_target - base_frame_gripper_pos)
-        xy_dist = np.linalg.norm(
-            hab_place_target[[0, 2]] - base_frame_gripper_pos[[0, 2]]
-        )
-        z_dist = abs(hab_place_target[1] - base_frame_gripper_pos[1])
-        return place_dist, xy_dist, z_dist
-
-    def get_in_gripper_tf(self):
-        position, rotation = self.spot.get_base_transform_to("link_wr1")
-        wrist_T_base = self.spot2habitat_transform(position, rotation)
-        gripper_T_base = wrist_T_base @ mn.Matrix4.translation(self.ee_gripper_offset)
-
-        return gripper_T_base
-
-    def get_target_in_base_frame(self, place_target):
-        global_T_local = self.curr_transform.inverted()
-        local_place_target = np.array(global_T_local.transform_point(place_target))
-        local_place_target[1] *= -1  # Still not sure why this is necessary
-
-        return local_place_target
-
 
 if __name__ == "__main__":
     spot = Spot("RealPlaceEnv")

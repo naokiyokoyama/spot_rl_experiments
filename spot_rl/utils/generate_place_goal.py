@@ -7,7 +7,7 @@ from spot_rl.envs.base_env import SpotBaseEnv
 EE_GRIPPER_OFFSET = [0.2, 0.0, 0.05]
 
 
-def main(spot: Spot):
+def get_global_place_target(spot: Spot):
     position, rotation = spot.get_base_transform_to("link_wr1")
     wrist_T_base = SpotBaseEnv.spot2habitat_transform(position, rotation)
     gripper_T_base = wrist_T_base @ mn.Matrix4.translation(
@@ -22,9 +22,11 @@ def main(spot: Spot):
         mn.Vector3(mn.Vector3(x, y, 0.5)),
     )
     global_place_target = base_T_global.transform_point(base_place_target)
-    print(global_place_target)
+
+    return global_place_target
 
 
 if __name__ == "__main__":
     spot = Spot("PlaceGoalGenerator")
-    main(spot)
+    global_place_target = get_global_place_target(spot)
+    print(global_place_target)
