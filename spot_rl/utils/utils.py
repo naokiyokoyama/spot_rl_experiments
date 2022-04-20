@@ -34,10 +34,6 @@ def place_target_from_waypoints(waypoint):
     return np.array(WAYPOINTS["place_targets"][waypoint])
 
 
-def obj_to_receptacle(object_name):
-    return WAYPOINTS["object_targets"][object_name]
-
-
 def closest_clutter(x, y, clutter_blacklist=None):
     if clutter_blacklist is None:
         clutter_blacklist = []
@@ -53,6 +49,13 @@ def closest_clutter(x, y, clutter_blacklist=None):
 
 
 def object_id_to_nav_waypoint(object_id):
+    if isinstance(object_id, str):
+        for k, v in WAYPOINTS["object_targets"].items():
+            if v[0] == object_id:
+                object_id = int(k)
+                break
+        if isinstance(object_id, str):
+            KeyError(f"{object_id} not a valid class name!")
     place_nav_target_name = WAYPOINTS["object_targets"][object_id][1]
     return place_nav_target_name, nav_target_from_waypoints(place_nav_target_name)
 

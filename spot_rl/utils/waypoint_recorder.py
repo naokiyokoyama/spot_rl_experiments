@@ -40,9 +40,6 @@ def main(spot: Spot):
     with open(WAYPOINT_YAML) as f:
         yaml_dict = yaml.load(f.read())
 
-    # Add waypoint
-    yaml_dict[args.waypoint_name] = [float(x), float(y), float(yaw_deg)]
-
     # Erase existing waypoint data if present
     if args.waypoint_name in yaml_dict:
         print(f"Following existing info for {args.waypoint_name} will be overwritten:")
@@ -53,7 +50,10 @@ def main(spot: Spot):
                 yaml_dict["place_targets"][args.waypoint_name],
             )
         if args.waypoint_name in yaml_dict["clutter"]:
-            print(f"\tremoving {args.waypoint_name} from clutter list")
+            print(f"\tUn-marking {args.waypoint_name} from clutter list")
+
+    # Add waypoint
+    yaml_dict[args.waypoint_name] = [float(x), float(y), float(yaw_deg)]
 
     yaml_dict["clutter"] = [i for i in yaml_dict["clutter"] if i != args.waypoint_name]
 

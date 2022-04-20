@@ -27,6 +27,15 @@ KILL_REMOTE_ROBOT = "/kill_remote_robot"
 INIT_REMOTE_ROBOT = "/init_remote_robot"
 
 
+def isiterable(var):
+    try:
+        iter(var)
+    except TypeError:
+        return False
+    else:
+        return True
+
+
 class RemoteSpot(Spot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -50,15 +59,24 @@ class RemoteSpot(Spot):
     def send_cmd(self, cmd_name, *args, **kwargs):
         cmd_with_args_str = f"{cmd_name}"
         if args:
-            cmd_with_args_str += ";" + ";".join([str(i) for i in args])
+            cmd_with_args_str += ";" + ";".join([self.arg2str(i) for i in args])
         if kwargs:
             cmd_with_args_str += ";" + str(kwargs)
-
         self.pub.publish(cmd_with_args_str)
 
     @staticmethod
-    def array2str(arr):
-        return f"np.array([{','.join([str(i) for i in arr])}])"
+    def arg2str(arg):
+        if isinstance(arg, str):
+            return arg
+        if type(arg) in [float, int, bool]:
+            return str(arg)
+        elif isiterable(arg):
+            return f"np.array([{','.join([str(i) for i in arg])}])"
+        else:
+            return str(arg)
+
+    # def array2str(arr):
+    #     return f"np.array([{','.join([str(i) for i in arr])}])"
 
     def blocking(self, timeout):
         start_time = time.time()
@@ -78,7 +96,7 @@ class RemoteSpot(Spot):
         if pixel_xy is None:
             self.send_cmd("grasp_hand_depth")
         else:
-            self.send_cmd("grasp_hand_depth", self.array2str(pixel_xy))
+            self.send_cmd("grasp_hand_depth", pixel_xy)
 
         return self.blocking(timeout)
 
@@ -87,7 +105,7 @@ class RemoteSpot(Spot):
     ):
         self.send_cmd(
             "set_arm_joint_positions",
-            self.array2str(positions),
+            positions,
             travel_time,
             max_vel,
             max_acc,
@@ -98,6 +116,12 @@ class RemoteSpot(Spot):
 
     def set_base_velocity(self, *args, **kwargs):
         self.send_cmd("set_base_velocity", *args, **kwargs)
+
+    def set_base_vel_and_arm_pos(self, *args, **kwargs):
+        self.send_cmd("set_base_vel_and_arm_pos", *args, **kwargs)
+
+    def dock(self, *args, **kwargs):
+        self.send_cmd("dock", *args, **kwargs)
 
     def power_on(self, *args, **kwargs):
         self.init_robot.publish(True)
