@@ -14,10 +14,10 @@ import rospy
 
 try:
     from deblur_gan.predictor import DeblurGANv2
+    from mask_rcnn_detectron2.inference import MaskRcnnInference
 except:
     pass
 
-from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
 from std_msgs.msg import String
