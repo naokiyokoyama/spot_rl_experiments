@@ -4,10 +4,10 @@ from collections import Counter
 
 import magnum as mn
 import numpy as np
-from gaze_env import SpotGazeEnv
 from spot_wrapper.spot import Spot
 
 from spot_rl.envs.base_env import SpotBaseEnv
+from spot_rl.envs.gaze_env import SpotGazeEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
 from spot_rl.utils.remote_spot import RemoteSpot
 from spot_rl.utils.utils import (
@@ -29,12 +29,8 @@ NUM_OBJECTS = np.sum(list(CLUTTER_AMOUNTS.values()))
 DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 
 
-def main(spot):
-    parser = get_default_parser()
-    parser.add_argument("-m", "--use-mixer", action="store_true")
-    args = parser.parse_args()
-    config = construct_config(args.opts)
-    if args.use_mixer:
+def main(spot, use_mixer, config):
+    if use_mixer:
         policy = MixerPolicy(
             config.WEIGHTS.MIXER,
             config.WEIGHTS.NAV,
@@ -78,7 +74,7 @@ def main(spot):
         observations = env.reset(waypoint=waypoint)
         policy.reset()
         done = False
-        if args.use_mixer:
+        if use_mixer:
             expert = None
         else:
             expert = Tasks.NAV
@@ -292,19 +288,23 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
 
 
 if __name__ == "__main__":
-    use_remote = True
+    parser = get_default_parser()
+    parser.add_argument("-m", "--use-mixer", action="store_true")
+    args = parser.parse_args()
+    config = construct_config(args.opts)
+    use_remote = config.USE_REMOTE_SPOT
     if use_remote:
         spot = RemoteSpot("RealSeqEnv")
     else:
         spot = Spot("RealSeqEnv")
     if use_remote:
         try:
-            main(spot)
+            main(spot, args.use_mixer, config)
         finally:
             spot.power_off()
     else:
         with spot.get_lease(hijack=True):
             try:
-                main(spot)
+                main(spot, args.use_mixer, config)
             finally:
                 spot.power_off()
