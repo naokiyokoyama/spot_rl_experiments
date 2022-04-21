@@ -11,7 +11,11 @@ except:
 import numpy as np
 import quaternion
 import rospy
-from deblur_gan.predictor import DeblurGANv2
+
+try:
+    from deblur_gan.predictor import DeblurGANv2
+except:
+    pass
 from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
@@ -83,6 +87,12 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             )
         else:
             self.mrcnn = None
+            if self.use_deblurgan:
+                self.deblur_gan = DeblurGANv2(weights_path=config.WEIGHTS.DEBLURGAN)
+                # Very first inference is always slow for some reason; run a random image
+                self.deblur_gan(np.zeros([256, 256, 3]))
+            else:
+                self.deblur_gan = None
         self.mrcnn_viz_pub = rospy.Publisher(
             MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
         )
@@ -94,12 +104,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.use_mrcnn = True
         self.use_deblurgan = config.USE_DEBLURGAN
         self.target_object_distance = -1
-        if self.use_deblurgan:
-            self.deblur_gan = DeblurGANv2(weights_path=config.WEIGHTS.DEBLURGAN)
-            # Very first inference is always slow for some reason; run a random image
-            self.deblur_gan(np.zeros([256, 256, 3]))
-        else:
-            self.deblur_gan = None
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(TEXT_TO_SPEECH_TOPIC, String, queue_size=1)
