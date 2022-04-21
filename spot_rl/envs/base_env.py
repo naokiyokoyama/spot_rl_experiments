@@ -16,6 +16,7 @@ try:
     from deblur_gan.predictor import DeblurGANv2
 except:
     pass
+
 from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import CompressedImage
 from spot_wrapper.spot import Spot, wrap_heading
