@@ -1,3 +1,4 @@
+import os
 import time
 
 import numpy as np
@@ -10,6 +11,8 @@ from spot_rl.utils.utils import (
     get_default_parser,
     nav_target_from_waypoints,
 )
+
+DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 
 
 def main(spot):
@@ -43,7 +46,7 @@ def main(spot):
             dock_start_time = time.time()
             while time.time() - dock_start_time < 2:
                 try:
-                    spot.dock(dock_id=520, home_robot=True)
+                    spot.dock(dock_id=DOCK_ID, home_robot=True)
                 except:
                     print("Dock not found... trying again")
                     time.sleep(0.1)
