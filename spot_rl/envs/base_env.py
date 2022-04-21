@@ -2,7 +2,12 @@ import time
 
 import cv2
 import gym
-import magnum as mn
+
+try:
+    import magnum as mn
+except:
+    pass
+
 import numpy as np
 import quaternion
 import rospy
@@ -156,7 +161,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         move_arm = False
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(2)
+            time.sleep(0.8)
             self.uncompress_imgs()
             self.get_mrcnn_det(save_image=True)
 
@@ -165,7 +170,16 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 self.say("Grasping " + self.target_obj_name)
 
                 # The following cmd is blocking
-                self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
+                success = False
+                timeout = 10
+                start_time = time.time()
+                while not success and time.time() < start_time + timeout:
+                    success = self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
+                    if not success and time.time() < start_time + timeout:
+                        self.uncompress_imgs()
+                        self.get_mrcnn_det(save_image=True)
+                if not success:
+                    raise RuntimeError("Grasping API timed out!")
 
                 # Just leave the object on the receptacle if desired
                 if self.config.DONT_PICK_UP:
