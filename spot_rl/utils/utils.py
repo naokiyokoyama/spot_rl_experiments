@@ -1,11 +1,16 @@
 import argparse
+import os.path as osp
 
 import numpy as np
 import yaml
 from yacs.config import CfgNode as CN
 
-DEFAULT_CONFIG = "configs/config.yaml"
-WAYPOINTS_YAML = "configs/waypoints.yaml"
+this_dir = osp.dirname(osp.abspath(__file__))
+spot_rl_dir = osp.join(osp.dirname(osp.dirname(this_dir)))
+configs_dir = osp.join(spot_rl_dir, "configs")
+
+DEFAULT_CONFIG = osp.join(configs_dir, "config.yaml")
+WAYPOINTS_YAML = osp.join(configs_dir, "waypoints.yaml")
 with open(WAYPOINTS_YAML) as f:
     WAYPOINTS = yaml.safe_load(f)
 
@@ -21,6 +26,15 @@ def construct_config(opts):
     config.set_new_allowed(True)
     config.merge_from_file(DEFAULT_CONFIG)
     config.merge_from_list(opts)
+
+    new_weights = {}
+    for k, v in config.WEIGHTS.items():
+        if not osp.isfile(v):
+            new_v = osp.join(spot_rl_dir, v)
+            if not osp.isfile(new_v):
+                raise KeyError(f"Neither {v} nor {new_v} exist!")
+            new_weights[k] = new_v
+    config.WEIGHTS.update(new_weights)
 
     return config
 

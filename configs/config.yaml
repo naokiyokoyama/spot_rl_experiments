@@ -7,6 +7,7 @@ WEIGHTS:
   DEBLURGAN: "weights/fpn_mobilenet.h5"
 
 DEVICE: "cuda:0"
+USE_REMOTE_SPOT: False
 
 # General env params
 CTRL_HZ: 2.0
