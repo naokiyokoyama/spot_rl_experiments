@@ -82,18 +82,19 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.place_attempted = False
 
         # Mask RCNN / Gaze
+        self.use_deblurgan = config.USE_DEBLURGAN
         if mask_rcnn_weights is not None:
             self.mrcnn = MaskRcnnInference(
                 mask_rcnn_weights, score_thresh=0.7, device=mask_rcnn_device
             )
-        else:
-            self.mrcnn = None
             if self.use_deblurgan:
                 self.deblur_gan = DeblurGANv2(weights_path=config.WEIGHTS.DEBLURGAN)
                 # Very first inference is always slow for some reason; run a random image
                 self.deblur_gan(np.zeros([256, 256, 3]))
             else:
                 self.deblur_gan = None
+        else:
+            self.mrcnn = None
         self.mrcnn_viz_pub = rospy.Publisher(
             MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
         )
@@ -103,7 +104,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.target_obj_name = None
         self.last_target_obj = None
         self.use_mrcnn = True
-        self.use_deblurgan = config.USE_DEBLURGAN
         self.target_object_distance = -1
 
         # Text-to-speech
