@@ -4,8 +4,9 @@ from collections import deque
 import cv2
 import numpy as np
 import rospy
-from spot_ros_node import SpotRosSubscriber
 from spot_wrapper.utils import resize_to_tallest
+
+from spot_rl.spot_ros_node import SpotRosSubscriber
 
 
 class SpotRosVisualizer(SpotRosSubscriber):
