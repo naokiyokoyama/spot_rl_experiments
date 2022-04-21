@@ -12,7 +12,7 @@ orig_to_alias = {
     "envs.nav_env": "spot_rl_nav_env",
     "envs.place_env": "spot_rl_place_env",
     "baselines.go_to_waypoint": "spot_rl_go_to_waypoint",
-    "utils.auto_dock": "spot_rl_auto_dock",
+    "utils.autodock": "spot_rl_autodock",
     "utils.waypoint_recorder": "spot_rl_waypoint_recorder",
     "ros_img_vis": "spot_rl_ros_img_vis",
 }
