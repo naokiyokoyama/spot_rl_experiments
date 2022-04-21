@@ -53,6 +53,8 @@ class RemoteSpot(Spot):
         # This publisher starts the remote robot
         self.init_robot = rospy.Publisher(INIT_REMOTE_ROBOT, Bool, queue_size=1)
 
+        self.error_on_no_response = True
+
     def cmd_ended_callback(self, msg):
         self.cmd_ended = msg.data
 
@@ -75,9 +77,6 @@ class RemoteSpot(Spot):
         else:
             return str(arg)
 
-    # def array2str(arr):
-    #     return f"np.array([{','.join([str(i) for i in arr])}])"
-
     def blocking(self, timeout):
         start_time = time.time()
         self.cmd_ended = False
@@ -88,6 +87,10 @@ class RemoteSpot(Spot):
         self.cmd_ended = False
 
         if time.time() > start_time + timeout:
+            if self.error_on_no_response:
+                raise TimeoutError(
+                    "Did not hear back from remote robot before timeout."
+                )
             return False
 
         return True

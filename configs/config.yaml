@@ -19,8 +19,8 @@ DISABLE_OBSTACLE_AVOIDANCE: True
 
 # Gaze env
 CENTER_TOLERANCE: 0.3
-OBJECT_LOCK_ON_NEEDED: 2
-TARGET_OBJ_ID: 3
+OBJECT_LOCK_ON_NEEDED: 3
+TARGET_OBJ_NAME: "rubiks_cube"
 DONT_PICK_UP: False
 
 # Place env
@@ -44,5 +44,6 @@ ACTUALLY_MOVE_ARM: True
 # Mask RCNN
 GRAYSCALE_MASK_RCNN: True
 USE_DEBLURGAN: True
+IMAGE_SCALE: 1.0
 # After this many time steps of not seeing the current target object, we become open to looking for new ones
 FORGET_TARGET_OBJECT_STEPS: 15

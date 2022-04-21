@@ -43,7 +43,7 @@ class SpotGazeEnv(SpotBaseEnv):
         # Reset parameters
         self.locked_on_object_count = 0
         if target_obj_id is None:
-            self.target_obj_id = self.config.TARGET_OBJ_ID
+            self.target_obj_name = self.config.TARGET_OBJ_NAME
 
         return observations
 

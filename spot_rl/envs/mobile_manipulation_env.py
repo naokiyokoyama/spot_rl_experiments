@@ -4,10 +4,11 @@ from collections import Counter
 import magnum as mn
 import numpy as np
 from gaze_env import SpotGazeEnv
-from spot_wrapper.spot import Spot, wrap_heading
+from spot_wrapper.spot import Spot
 
 from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
+from spot_rl.utils.remote_spot import RemoteSpot
 from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,
@@ -58,60 +59,60 @@ def main(spot):
     env.power_robot()
     time.sleep(1)
     count = Counter()
-    try:
-        for trip_idx in range(NUM_OBJECTS + 1):
-            if trip_idx < NUM_OBJECTS:
-                # 2 objects per receptacle
-                clutter_blacklist = [
-                    i for i in WAYPOINTS["clutter"] if count[i] >= CLUTTER_AMOUNTS[i]
-                ]
-                waypoint_name, waypoint = closest_clutter(
-                    env.x, env.y, clutter_blacklist=clutter_blacklist
-                )
-                count[waypoint_name] += 1
-                env.say("Going to " + waypoint_name + "to search for objects")
+    for trip_idx in range(NUM_OBJECTS + 1):
+        if trip_idx < NUM_OBJECTS:
+            # 2 objects per receptacle
+            clutter_blacklist = [
+                i for i in WAYPOINTS["clutter"] if count[i] >= CLUTTER_AMOUNTS[i]
+            ]
+            waypoint_name, waypoint = closest_clutter(
+                env.x, env.y, clutter_blacklist=clutter_blacklist
+            )
+            count[waypoint_name] += 1
+            env.say("Going to " + waypoint_name + "to search for objects")
+        else:
+            env.say("Finished object rearrangement. Heading to dock.")
+            waypoint = nav_target_from_waypoints("dock")
+        observations = env.reset(waypoint=waypoint)
+        policy.reset()
+        done = False
+        if args.use_mixer:
+            expert = None
+        else:
+            expert = Tasks.NAV
+        while not done:
+            if expert is None:
+                base_action, arm_action = policy.act(observations)
             else:
-                env.say("Finished object rearrangement. Heading to dock.")
-                waypoint = nav_target_from_waypoints("dock")
-            observations = env.reset(waypoint=waypoint)
-            policy.reset()
-            done = False
-            if args.use_mixer:
-                expert = None
-            else:
-                expert = Tasks.NAV
-            while not done:
-                if expert is None:
-                    base_action, arm_action = policy.act(observations)
-                else:
-                    base_action, arm_action = policy.act(observations, expert=expert)
-                observations, _, done, info = env.step(
-                    base_action=base_action, arm_action=arm_action
-                )
-                if expert is not None:
-                    expert = info["correct_skill"]
+                base_action, arm_action = policy.act(observations, expert=expert)
+            observations, _, done, info = env.step(
+                base_action=base_action, arm_action=arm_action
+            )
+            if expert is not None:
+                expert = info["correct_skill"]
 
-                if trip_idx >= NUM_OBJECTS and expert != Tasks.NAV:
-                    break
+            if trip_idx >= NUM_OBJECTS and env.get_nav_success(
+                observations, 0.3, np.deg2rad(10)
+            ):
+                # The robot has arrived back at the dock
+                break
 
-                # Print info
-                # stats = [f"{k}: {v}" for k, v in info.items()]
-                # print("\t".join(stats))
+            # Print info
+            # stats = [f"{k}: {v}" for k, v in info.items()]
+            # print("\t".join(stats))
 
-                # We reuse nav, so we have to reset it before we use it again.
-                if expert is not None and expert != Tasks.NAV:
-                    policy.nav_policy.reset()
+            # We reuse nav, so we have to reset it before we use it again.
+            if expert is not None and expert != Tasks.NAV:
+                policy.nav_policy.reset()
 
-        env.say("Executing automatic docking")
-        dock_start_time = time.time()
-        while time.time() - dock_start_time < 2:
-            try:
-                spot.dock(dock_id=520, home_robot=True)
-            except:
-                print("Dock not found... trying again")
-                time.sleep(0.1)
-    finally:
-        spot.power_off()
+    env.say("Executing automatic docking")
+    dock_start_time = time.time()
+    while time.time() - dock_start_time < 2:
+        try:
+            spot.dock(dock_id=520, home_robot=True)
+        except:
+            print("Dock not found... trying again")
+            time.sleep(0.1)
 
 
 class Tasks:
@@ -163,7 +164,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
         # Gaze
         self.locked_on_object_count = 0
-        self.target_obj_id = config.TARGET_OBJ_ID
+        self.target_obj_name = config.TARGET_OBJ_NAME
 
         # Place
         self.place_target = None
@@ -176,10 +177,11 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
     def reset(self, waypoint=None, *args, **kwargs):
         # Move arm to initial configuration (w/ gripper open)
-        cmd_id = self.spot.set_arm_joint_positions(
+        self.spot.set_arm_joint_positions(
             positions=self.initial_arm_joint_angles, travel_time=0.75
         )
-        self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
+        # Wait for arm to arrive to position
+        time.sleep(0.75)
         self.spot.open_gripper()
 
         # Nav
@@ -207,6 +209,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         )
         if (
             not grasp
+            and not self.grasp_attempted
             and self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED
         ):
             print(f"Can't grasp: object is {self.target_object_distance} m far")
@@ -227,7 +230,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
         if self.grasp_attempted and not self.navigating_to_place:
             # Determine where to go based on what object we've just grasped
-            waypoint_name, waypoint = object_id_to_nav_waypoint(self.target_obj_id)
+            waypoint_name, waypoint = object_id_to_nav_waypoint(self.target_obj_name)
             self.say("Navigating to " + waypoint_name)
             self.place_target = place_target_from_waypoints(waypoint_name)
             self.goal_xy, self.goal_heading = (waypoint[:2], waypoint[2])
@@ -239,7 +242,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
         rho = observations["target_point_goal_gps_and_compass_sensor"][0]
         goal_heading = observations["goal_heading"][0]
-        self.use_mrcnn = rho < 1.8 and abs(goal_heading) < np.deg2rad(60)
+        self.use_mrcnn = rho < 2 and abs(goal_heading) < np.deg2rad(60)
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
 
@@ -257,7 +260,7 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     def reset(self, *args, **kwargs):
         observations = super().reset(*args, **kwargs)
         self.current_task = Tasks.NAV
-        self.target_obj_id = 0
+        self.target_obj_name = 0
 
         return observations
 
@@ -270,7 +273,7 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
         ):
             if not self.grasp_attempted:
                 self.current_task = Tasks.GAZE
-                self.target_obj_id = None
+                self.target_obj_name = None
             else:
                 self.current_task = Tasks.PLACE
                 self.say("Starting place")
@@ -287,6 +290,19 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
 
 
 if __name__ == "__main__":
-    spot = Spot("RealSeqEnv")
-    with spot.get_lease(hijack=True):
-        main(spot)
+    use_remote = True
+    if use_remote:
+        spot = RemoteSpot("RealSeqEnv")
+    else:
+        spot = Spot("RealSeqEnv")
+    if use_remote:
+        try:
+            main(spot)
+        finally:
+            spot.power_off()
+    else:
+        with spot.get_lease(hijack=True):
+            try:
+                main(spot)
+            finally:
+                spot.power_off()

@@ -21,7 +21,7 @@ from spot_rl.spot_ros_node import (
 )
 from spot_rl.utils.utils import object_id_to_object_name
 
-BASE_VEL_MAX_DURATION = 3.0
+MAX_CMD_DURATION = 3.0
 
 
 def pad_action(action):
@@ -84,7 +84,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.forget_target_object_steps = config.FORGET_TARGET_OBJECT_STEPS
         self.curr_forget_steps = 0
         self.obj_center_pixel = None
-        self.target_obj_id = None
+        self.target_obj_name = None
         self.last_target_obj = None
         self.use_mrcnn = True
         self.use_deblurgan = config.USE_DEBLURGAN
@@ -98,9 +98,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(TEXT_TO_SPEECH_TOPIC, String, queue_size=1)
-
-        # Arrange Spot into initial configuration
-        assert spot.spot_lease is not None, "Need motor control of Spot!"
 
     def viz_callback(self, msg):
         # This node does not process mrcnn visualizations
@@ -126,7 +123,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.use_mrcnn = True
         self.locked_on_object_count = 0
         self.curr_forget_steps = 0
-        self.target_obj_id = target_obj_id
+        self.target_obj_name = target_obj_id
         self.last_target_obj = None
         self.obj_center_pixel = None
         self.place_attempted = False
@@ -155,15 +152,17 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
         target_yaw = None
+        move_base = False
+        move_arm = False
         if grasp:
-            # Briefly pause and get latest gripper image
+            # Briefly pause and get latest gripper image to ensure precise grasp
             time.sleep(2)
             self.uncompress_imgs()
-            self.get_mrcnn_det()
+            self.get_mrcnn_det(save_image=True)
 
             if self.locked_on_object_count > 0:
                 print("GRASP ACTION CALLED: Grasping center object!")
-                self.say("Grasping " + object_id_to_object_name(self.target_obj_id))
+                self.say("Grasping " + self.target_obj_name)
 
                 # The following cmd is blocking
                 self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
@@ -173,10 +172,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                     self.spot.open_gripper()
 
                 # Return to pre-grasp joint positions after grasp
-                cmd_id = self.spot.set_arm_joint_positions(
+                self.spot.set_arm_joint_positions(
                     positions=self.initial_arm_joint_angles, travel_time=1.0
                 )
-                self.spot.block_until_arm_arrives(cmd_id, timeout_sec=2)
+                # Wait for arm to return to position
+                time.sleep(1.0)
                 self.grasp_attempted = True
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
@@ -194,14 +194,8 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 lin_vel *= self.max_lin_vel
                 ang_vel *= self.max_ang_vel
                 # No horizontal velocity
-                self.spot.set_base_velocity(
-                    lin_vel,
-                    0.0,
-                    ang_vel * 1.2,  # Spot tends to undershoot this
-                    BASE_VEL_MAX_DURATION,
-                    disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
-                )
                 target_yaw = wrap_heading(self.yaw + ang_vel * 1 / self.ctrl_hz)
+                move_base = True
 
             if arm_action is None:
                 arm_action = np.zeros(4)
@@ -209,15 +203,34 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 arm_action = rescale_actions(arm_action)
 
             if np.count_nonzero(arm_action) > 0:
+                move_arm = True
                 scaled_action = arm_action * self.config[max_joint_movement_key]
                 target_positions = self.current_arm_pose + pad_action(scaled_action)
                 target_positions = np.clip(
                     target_positions, self.arm_lower_limits, self.arm_upper_limits
                 )
-                if self.actually_move_arm:
-                    _ = self.spot.set_arm_joint_positions(
-                        positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
-                    )
+
+            if move_base and move_arm:
+                self.spot.set_base_vel_and_arm_pos(
+                    lin_vel,
+                    0.0,
+                    ang_vel * 1.2,  # Spot tends to undershoot this
+                    np.array(target_positions),
+                    MAX_CMD_DURATION,
+                    disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
+                )
+            elif move_base:
+                self.spot.set_base_velocity(
+                    lin_vel,
+                    0.0,
+                    ang_vel * 1.2,  # Spot tends to undershoot this
+                    MAX_CMD_DURATION,
+                    disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
+                )
+            elif move_arm:
+                _ = self.spot.set_arm_joint_positions(
+                    positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
+                )
 
         # Spin until enough time has passed during this step
         start_time = time.time()
@@ -226,9 +239,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 wrap_heading(self.yaw - target_yaw)
             ) < np.deg2rad(3):
                 # Prevent overshooting of angular velocity
-                self.spot.set_base_velocity(lin_vel, 0, 0, BASE_VEL_MAX_DURATION)
+                self.spot.set_base_velocity(lin_vel, 0, 0, MAX_CMD_DURATION)
+                target_yaw = None
 
-        if target_yaw is not None:
+        if move_base:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
 
         self.uncompress_imgs()
@@ -312,14 +326,17 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
     def get_gripper_images(
         self, left_crop=124, right_crop=60, new_width=228, new_height=240
     ):
-        if self.grasp_attempted or not self.use_mrcnn:
+        if self.grasp_attempted:
             # Return blank images if the gripper is being blocked
             blank_img = np.zeros([new_height, new_width, 1], dtype=np.float32)
             return blank_img, blank_img.copy()
 
         arm_depth = self.hand_depth.copy()
         orig_height, orig_width = arm_depth.shape[:2]
-        obj_bbox = self.get_mrcnn_det()
+        if self.use_mrcnn:
+            obj_bbox = self.get_mrcnn_det()
+        else:
+            obj_bbox = None
 
         # Crop out black vertical bars on the left and right edges of aligned depth img
         arm_depth = arm_depth[:, left_crop:-right_crop]
@@ -354,8 +371,20 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         return arm_depth, arm_depth_bbox
 
-    def get_mrcnn_det(self):
+    def get_mrcnn_det(self, save_image=False):
         img = self.hand_rgb.copy()
+        if save_image:
+            marked_img = img.copy()
+        img_scale_factor = self.config.IMAGE_SCALE
+        height, width = img.shape[:2]
+        if img_scale_factor != 1.0:
+            img = cv2.resize(
+                img,
+                (0, 0),
+                fx=img_scale_factor,
+                fy=img_scale_factor,
+                interpolation=cv2.INTER_AREA,
+            )
         if self.use_deblurgan:
             st = time.time()
             img = self.deblur_gan(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -368,9 +397,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         pred = self.mrcnn.inference(img)
 
-        # If we haven't seen the current target object in awhile, look for new ones
+        # If we haven't seen the current target object in a while, look for new ones
         if self.curr_forget_steps >= self.forget_target_object_steps:
-            self.target_obj_id = None
+            self.target_obj_name = None
 
         detections = pred["instances"]
         if len(detections) > 0:
@@ -383,7 +412,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             ]
             print("[mask_rcnn]: Detected:", ", ".join(detected_classes))
 
-            if self.target_obj_id is None:
+            if self.target_obj_name is None:
                 most_confident_class_id = None
                 most_confident_score = 0.0
                 for det_idx in range(len(detections)):
@@ -394,46 +423,53 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                         most_confident_class_id = class_id.item()
                 if most_confident_score == 0.0:
                     return None
-                self.target_obj_id = most_confident_class_id
-                if self.target_obj_id != self.last_target_obj:
-                    self.say(
-                        "Now targeting " + object_id_to_object_name(self.target_obj_id)
-                    )
-                self.last_target_obj = self.target_obj_id
+                self.target_obj_name = object_id_to_object_name(most_confident_class_id)
+                if self.target_obj_name != self.last_target_obj:
+                    self.say("Now targeting " + self.target_obj_name)
+                self.last_target_obj = self.target_obj_name
         else:
             self.curr_forget_steps += 1
             return None
 
         # Check if desired object is in view of camera
-        target_obj_id = self.target_obj_id
+        target_obj_id = self.target_obj_name
 
         def correct_class(detection):
-            return int(detection.split(",")[0]) == target_obj_id
+            return (
+                object_id_to_object_name(int(detection.split(",")[0])) == target_obj_id
+            )
 
         matching_detections = [d for d in det_str.split(";") if correct_class(d)]
         if not matching_detections:
+            self.curr_forget_steps += 1
             return None
+        self.curr_forget_steps = 0
 
         # Get object match with the highest score
         def get_score(detection):
             return float(detection.split(",")[1])
 
         best_detection = sorted(matching_detections, key=get_score)[-1]
-        x1, y1, x2, y2 = [int(float(i)) for i in best_detection.split(",")[-4:]]
+        x1, y1, x2, y2 = [
+            int(float(i) / img_scale_factor) for i in best_detection.split(",")[-4:]
+        ]
 
         # Create bbox mask from selected detection
-        height, width = img.shape[:2]
-        cx = np.mean([x1, x2])
-        cy = np.mean([y1, y2])
+        cx = int(np.mean([x1, x2]))
+        cy = int(np.mean([y1, y2]))
         self.obj_center_pixel = (cx, cy)
+
+        if save_image:
+            marked_img = cv2.circle(marked_img, (cx, cy), 5, (0, 0, 255), -1)
+            out_path = f"{time.time()}.png"
+            cv2.imwrite(out_path, marked_img)
+            print("Saved grasp image as", out_path)
 
         locked_on = self.locked_on_object(x1, y1, x2, y2, height, width)
         if locked_on:
             self.locked_on_object_count += 1
-            self.curr_forget_steps = 0
             print(f"Locked on to target {self.locked_on_object_count} time(s)...")
         else:
-            self.curr_forget_steps += 1
             if self.locked_on_object_count > 0:
                 print("Lost lock-on!")
             self.locked_on_object_count = 0
