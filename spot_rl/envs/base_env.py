@@ -1,3 +1,5 @@
+import os
+import os.path as osp
 import time
 
 import cv2
@@ -32,6 +34,11 @@ from spot_rl.spot_ros_node import (
 from spot_rl.utils.utils import object_id_to_object_name
 
 MAX_CMD_DURATION = 3.0
+GRASP_VIS_DIR = osp.join(
+    osp.dirname(osp.dirname(osp.abspath(__file__))), "grasp_visualizations"
+)
+if not osp.isdir(GRASP_VIS_DIR):
+    os.mkdir(GRASP_VIS_DIR)
 
 
 def pad_action(action):
@@ -39,10 +46,13 @@ def pad_action(action):
     return np.array([*action[:3], 0.0, action[3], 0.0])
 
 
-def rescale_actions(actions, action_thresh=0.05):
+def rescale_actions(actions, action_thresh=0.05, silence_only=False):
     actions = np.clip(actions, -1, 1)
     # Silence low actions
     actions[np.abs(actions) < action_thresh] = 0.0
+    if silence_only:
+        return actions
+
     # Remap action scaling to compensate for silenced values
     action_offsets = np.ones_like(actions) * action_thresh
     action_offsets[actions < 0] = -action_offsets[actions < 0]
@@ -82,14 +92,14 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.place_attempted = False
 
         # Mask RCNN / Gaze
-        self.use_deblurgan = config.USE_DEBLURGAN
+        self.use_deblurgan = config.USE_DEBLURGAN and mask_rcnn_weights is not None
         if mask_rcnn_weights is not None:
             self.mrcnn = MaskRcnnInference(
                 mask_rcnn_weights, score_thresh=0.7, device=mask_rcnn_device
             )
             if self.use_deblurgan:
                 self.deblur_gan = DeblurGANv2(weights_path=config.WEIGHTS.DEBLURGAN)
-                # Very first inference is always slow for some reason; run a random image
+                # Very first inference is always slow; run a random image
                 self.deblur_gan(np.zeros([256, 256, 3]))
             else:
                 self.deblur_gan = None
@@ -122,6 +132,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
     def say(self, *args):
         text = " ".join(args)
+        print("[base_env.py]: Saying:", text)
         self.tts_pub.publish(String(text))
 
     def reset(self, target_obj_id=None, *args, **kwargs):
@@ -168,10 +179,12 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             # Briefly pause and get latest gripper image to ensure precise grasp
             time.sleep(0.8)
             self.uncompress_imgs()
-            self.get_mrcnn_det(save_image=True)
+            self.update_gripper_detections(save_image=True)
 
             if self.locked_on_object_count > 0:
-                print("GRASP ACTION CALLED: Grasping center object!")
+                x, y = self.obj_center_pixel
+                y, x = np.array([y, x]) / np.array([*self.hand_rgb.shape[:2]]) * 100
+                print(f"GRASP ACTION CALLED: Aiming at (x, y): ({x:.2f}%, {y:.2f}%)!")
                 self.say("Grasping " + self.target_obj_name)
 
                 # The following cmd is blocking
@@ -182,7 +195,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                     success = self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
                     if not success and time.time() < start_time + timeout:
                         self.uncompress_imgs()
-                        self.get_mrcnn_det(save_image=True)
+                        self.update_gripper_detections(save_image=True)
                 if not success:
                     raise RuntimeError("Grasping API timed out!")
 
@@ -205,7 +218,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             if base_action is None:
                 base_action = np.zeros(2)
             else:
-                base_action = rescale_actions(base_action)
+                base_action = rescale_actions(base_action, silence_only=True)
 
             if np.count_nonzero(base_action) > 0:
                 # Command velocities using the input action
@@ -353,7 +366,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         arm_depth = self.hand_depth.copy()
         orig_height, orig_width = arm_depth.shape[:2]
         if self.use_mrcnn:
-            obj_bbox = self.get_mrcnn_det()
+            obj_bbox = self.update_gripper_detections()
         else:
             obj_bbox = None
 
@@ -390,10 +403,16 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         return arm_depth, arm_depth_bbox
 
+    def update_gripper_detections(self, save_image=False):
+        det = self.get_mrcnn_det(save_image=save_image)
+        if det is None:
+            self.curr_forget_steps += 1
+            self.locked_on_object_count = 0
+        return det
+
     def get_mrcnn_det(self, save_image=False):
         img = self.hand_rgb.copy()
-        if save_image:
-            marked_img = img.copy()
+        marked_img = img.copy() if save_image else None
         img_scale_factor = self.config.IMAGE_SCALE
         height, width = img.shape[:2]
         if img_scale_factor != 1.0:
@@ -447,7 +466,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                     self.say("Now targeting " + self.target_obj_name)
                 self.last_target_obj = self.target_obj_name
         else:
-            self.curr_forget_steps += 1
             return None
 
         # Check if desired object is in view of camera
@@ -460,8 +478,8 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         matching_detections = [d for d in det_str.split(";") if correct_class(d)]
         if not matching_detections:
-            self.curr_forget_steps += 1
             return None
+
         self.curr_forget_steps = 0
 
         # Get object match with the highest score
@@ -480,9 +498,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         if save_image:
             marked_img = cv2.circle(marked_img, (cx, cy), 5, (0, 0, 255), -1)
-            out_path = f"{time.time()}.png"
+            out_path = osp.join(GRASP_VIS_DIR, f"{time.time()}.png")
             cv2.imwrite(out_path, marked_img)
             print("Saved grasp image as", out_path)
+            img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
+            self.mrcnn_viz_pub.publish(img_msg)
 
         locked_on = self.locked_on_object(x1, y1, x2, y2, height, width)
         if locked_on:
