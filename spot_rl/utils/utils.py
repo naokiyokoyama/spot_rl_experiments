@@ -76,3 +76,7 @@ def object_id_to_nav_waypoint(object_id):
 
 def object_id_to_object_name(object_id):
     return WAYPOINTS["object_targets"][object_id][0]
+
+
+def get_clutter_amounts():
+    return WAYPOINTS["clutter_amounts"]

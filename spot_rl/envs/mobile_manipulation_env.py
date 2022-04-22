@@ -14,17 +14,15 @@ from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,
     construct_config,
+    get_clutter_amounts,
     get_default_parser,
     nav_target_from_waypoints,
     object_id_to_nav_waypoint,
     place_target_from_waypoints,
 )
 
-CLUTTER_AMOUNTS = {
-    "whiteboard": 3,
-    "black_box": 2,
-    "white_box": 3,
-}
+CLUTTER_AMOUNTS = Counter()
+CLUTTER_AMOUNTS.update(get_clutter_amounts())
 NUM_OBJECTS = np.sum(list(CLUTTER_AMOUNTS.values()))
 DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 
