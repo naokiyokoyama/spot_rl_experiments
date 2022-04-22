@@ -4,9 +4,13 @@ from collections import deque
 import cv2
 import numpy as np
 import rospy
+import tqdm
 from spot_wrapper.utils import resize_to_tallest
 
 from spot_rl.spot_ros_node import SpotRosSubscriber
+
+FOUR_CC = cv2.VideoWriter_fourcc(*"MP4V")
+FPS = 30
 
 
 class SpotRosVisualizer(SpotRosSubscriber):
@@ -14,12 +18,10 @@ class SpotRosVisualizer(SpotRosSubscriber):
         super().__init__(node_name)
         self.last_render = time.time()
         self.fps_buffer = deque(maxlen=10)
+        self.recording = False
+        self.frames = []
 
-    def vis_imgs(self):
-        # Skip if no messages were updated
-        if not self.updated:
-            return
-
+    def generate_composite(self):
         # Gather latest images
         self.uncompress_imgs()
         orig_msgs = [self.front_depth, self.hand_depth[:, 124:-60], self.hand_rgb]
@@ -28,7 +30,7 @@ class SpotRosVisualizer(SpotRosSubscriber):
             self.filter_depth(
                 self.hand_depth[:, 124:-60], max_depth=1.6, whiten_black=True
             ),
-            np.ones_like(self.hand_rgb)
+            np.zeros_like(self.hand_rgb)
             if self.det is None
             else self.cv_bridge.compressed_imgmsg_to_cv2(self.det),
         ]
@@ -43,15 +45,79 @@ class SpotRosVisualizer(SpotRosSubscriber):
             # Make sure all imgs are same height
             img_rows.append(resize_to_tallest(imgs, hstack=True))
         img = np.vstack(img_rows)
-        cv2.imshow("ROS Spot Images", img)
-        cv2.waitKey(1)
 
-        self.updated = False
-        self.fps_buffer.append(1 / (time.time() - self.last_render))
-        rospy.loginfo(
-            f"{np.mean(self.fps_buffer):.2f} FPS (window size: {len(self.fps_buffer)})"
+        return img
+
+    @staticmethod
+    def overlay_text(img, text):
+        viz_img = img.copy()
+        line, font, font_size, font_thickness = (
+            text,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.0,
+            4,
         )
-        self.last_render = time.time()
+        text_width, text_height = cv2.getTextSize(
+            line, font, font_size, font_thickness
+        )[0][:2]
+        height, width = img.shape[:2]
+        x = (width - text_width) // 2
+        y = (height - text_height) // 2
+        cv2.putText(
+            viz_img,
+            line,
+            (x, y),
+            font,
+            font_size,
+            (0, 0, 255),
+            font_thickness,
+            lineType=cv2.LINE_AA,
+        )
+        return viz_img
+
+    def vis_imgs(self):
+        # Skip if no messages were updated
+        if self.updated:
+            img = self.generate_composite()
+            if not self.recording:
+                cv2.imshow("ROS Spot Images", img)
+            else:
+                viz_img = self.overlay_text(img, "RECORDING IS ON!")
+                cv2.imshow("ROS Spot Images", viz_img)
+            if self.recording:
+                self.frames.append([img.copy(), time.time()])
+
+            self.updated = False
+            self.fps_buffer.append(1 / (time.time() - self.last_render))
+            mean_fps = np.mean(self.fps_buffer)
+            rospy.loginfo(f"{mean_fps:.2f} FPS (window size: {len(self.fps_buffer)})")
+            self.last_render = time.time()
+
+        # Logic for recording video
+        key = cv2.waitKey(1)
+        if key != -1 and ord("r") == key:
+            self.recording = not self.recording
+        if not self.recording and len(self.frames) > 0:
+            # Save the video
+            first_frame, first_timestamp = self.frames[0]
+            viz_img = self.overlay_text(np.zeros_like(first_frame), "SAVING VIDEO...")
+            cv2.imshow("ROS Spot Images", viz_img)
+            cv2.waitKey(1)
+            height, width = first_frame.shape[:2]
+            out_path = f"{time.time()}.mp4"
+            video = cv2.VideoWriter(out_path, FOUR_CC, FPS, (width, height))
+            curr_time = first_timestamp
+            for idx, (frame, timestamp) in enumerate(tqdm.tqdm(self.frames)):
+                if idx + 1 >= len(self.frames):
+                    video.write(frame)
+                else:
+                    next_timestamp = self.frames[idx + 1][1]
+                    while curr_time < next_timestamp:
+                        video.write(frame)
+                        curr_time += 1 / FPS
+            video.release()
+            print(f"Saved video to {out_path}!")
+            self.frames = []
 
 
 def main():
