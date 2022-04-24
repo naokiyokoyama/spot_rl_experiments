@@ -11,7 +11,7 @@ from sensor_msgs.msg import Image
 from spot_wrapper.spot import SpotCamIds
 from std_msgs.msg import Bool, ByteMultiArray, Float32, Header, String
 
-from spot_rl.utils.timer import Stopwatch
+from spot_rl.utils.stopwatch import Stopwatch
 from spot_rl.utils.utils import construct_config, get_default_parser
 
 COMPRESSED_IMAGES_TOPIC = "/spot_cams/compressed_images"

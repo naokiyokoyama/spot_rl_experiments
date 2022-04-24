@@ -10,7 +10,7 @@ from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.envs.gaze_env import SpotGazeEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
 from spot_rl.utils.remote_spot import RemoteSpot
-from spot_rl.utils.timer import Stopwatch
+from spot_rl.utils.stopwatch import Stopwatch
 from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,

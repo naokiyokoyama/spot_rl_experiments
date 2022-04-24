@@ -11,7 +11,7 @@ from spot_rl.utils.mask_rcnn_node import (
     get_mrcnn_model,
     pred2string,
 )
-from spot_rl.utils.timer import Stopwatch
+from spot_rl.utils.stopwatch import Stopwatch
 
 try:
     import magnum as mn
