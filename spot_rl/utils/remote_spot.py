@@ -95,13 +95,10 @@ class RemoteSpot(Spot):
 
         return True
 
-    def grasp_hand_depth(self, pixel_xy=None, timeout=10):
-        if pixel_xy is None:
-            self.send_cmd("grasp_hand_depth")
-        else:
-            self.send_cmd("grasp_hand_depth", pixel_xy)
-
-        return self.blocking(timeout)
+    def grasp_hand_depth(self, *args, **kwargs):
+        assert "timeout" in kwargs
+        self.send_cmd("grasp_hand_depth", *args, **kwargs)
+        return self.blocking(timeout=kwargs["timeout"])
 
     def set_arm_joint_positions(
         self, positions, travel_time=1.0, max_vel=2.5, max_acc=15

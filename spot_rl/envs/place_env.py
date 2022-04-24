@@ -19,6 +19,10 @@ def main(spot):
     args = parser.parse_args()
     config = construct_config(args.opts)
 
+    # Don't need cameras for Place
+    config.USE_HEAD_CAMERA = False
+    config.USE_MRCNN = False
+
     if args.waypoint is not None:
         assert not args.target_is_local
         place_target = place_target_from_waypoints(args.waypoint)

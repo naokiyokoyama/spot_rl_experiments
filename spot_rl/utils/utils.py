@@ -1,5 +1,6 @@
 import argparse
 import os.path as osp
+from collections import OrderedDict
 
 import numpy as np
 import yaml
@@ -21,7 +22,9 @@ def get_default_parser():
     return parser
 
 
-def construct_config(opts):
+def construct_config(opts=None):
+    if opts is None:
+        opts = []
     config = CN()
     config.set_new_allowed(True)
     config.merge_from_file(DEFAULT_CONFIG)
@@ -80,3 +83,15 @@ def object_id_to_object_name(object_id):
 
 def get_clutter_amounts():
     return WAYPOINTS["clutter_amounts"]
+
+
+class FixSizeOrderedDict(OrderedDict):
+    def __init__(self, *args, maxlen=0, **kwargs):
+        self._maxlen = maxlen
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        OrderedDict.__setitem__(self, key, value)
+        if self._maxlen > 0:
+            if len(self) > self._maxlen:
+                self.popitem(False)

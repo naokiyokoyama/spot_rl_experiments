@@ -23,6 +23,9 @@ def main(spot):
     args = parser.parse_args()
     config = construct_config(args.opts)
 
+    # Don't need gripper camera for Nav
+    config.USE_MRCNN = False
+
     policy = NavPolicy(config.WEIGHTS.NAV, device=config.DEVICE)
     policy.reset()
 

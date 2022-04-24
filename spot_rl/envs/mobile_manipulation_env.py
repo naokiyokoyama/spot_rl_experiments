@@ -10,6 +10,7 @@ from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.envs.gaze_env import SpotGazeEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
 from spot_rl.utils.remote_spot import RemoteSpot
+from spot_rl.utils.timer import Stopwatch
 from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,
@@ -25,6 +26,8 @@ CLUTTER_AMOUNTS = Counter()
 CLUTTER_AMOUNTS.update(get_clutter_amounts())
 NUM_OBJECTS = np.sum(list(CLUTTER_AMOUNTS.values()))
 DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
+
+DEBUGGING = False
 
 
 def main(spot, use_mixer, config):
@@ -46,12 +49,8 @@ def main(spot, use_mixer, config):
         )
         env_class = SpotMobileManipulationSeqEnv
 
-    env = env_class(
-        config,
-        spot,
-        mask_rcnn_weights=config.WEIGHTS.MRCNN,
-        mask_rcnn_device=config.DEVICE,
-    )
+    stopwatch = Stopwatch()
+    env = env_class(config, spot, stopwatch)
     env.power_robot()
     time.sleep(1)
     count = Counter()
@@ -65,7 +64,7 @@ def main(spot, use_mixer, config):
                 env.x, env.y, clutter_blacklist=clutter_blacklist
             )
             count[waypoint_name] += 1
-            env.say("Going to " + waypoint_name + "to search for objects")
+            env.say("Going to " + waypoint_name + " to search for objects")
         else:
             env.say("Finished object rearrangement. Heading to dock.")
             waypoint = nav_target_from_waypoints("dock")
@@ -76,14 +75,21 @@ def main(spot, use_mixer, config):
             expert = None
         else:
             expert = Tasks.NAV
+        stopwatch.reset()
         while not done:
             if expert is None:
                 base_action, arm_action = policy.act(observations)
+                nav_silence_only = policy.nav_silence_only
             else:
                 base_action, arm_action = policy.act(observations, expert=expert)
+                nav_silence_only = True
+            stopwatch.record("policy_inference")
             observations, _, done, info = env.step(
-                base_action=base_action, arm_action=arm_action
+                base_action=base_action,
+                arm_action=arm_action,
+                nav_silence_only=nav_silence_only,
             )
+            stopwatch.record("env_step")
             if expert is not None:
                 expert = info["correct_skill"]
 
@@ -100,6 +106,9 @@ def main(spot, use_mixer, config):
             # We reuse nav, so we have to reset it before we use it again.
             if expert is not None and expert != Tasks.NAV:
                 policy.nav_policy.reset()
+
+            if DEBUGGING:
+                stopwatch.print_stats(sort=True, latest=True)
 
     env.say("Executing automatic docking")
     dock_start_time = time.time()
@@ -147,8 +156,8 @@ class SequentialExperts:
 
 
 class SpotMobileManipulationBaseEnv(SpotGazeEnv):
-    def __init__(self, config, spot: Spot, **kwargs):
-        super().__init__(config, spot, **kwargs)
+    def __init__(self, config, spot: Spot, stopwatch=None):
+        super().__init__(config, spot)
 
         # Nav
         self.goal_xy = None
@@ -249,8 +258,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
 
 class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
-    def __init__(self, config, spot, **kwargs):
-        super().__init__(config, spot, **kwargs)
+    def __init__(self, config, spot: Spot, stopwatch=None):
+        super().__init__(config, spot, stopwatch)
         self.current_task = Tasks.NAV
 
     def reset(self, *args, **kwargs):
@@ -290,12 +299,8 @@ if __name__ == "__main__":
     parser.add_argument("-m", "--use-mixer", action="store_true")
     args = parser.parse_args()
     config = construct_config(args.opts)
-    use_remote = config.USE_REMOTE_SPOT
-    if use_remote:
-        spot = RemoteSpot("RealSeqEnv")
-    else:
-        spot = Spot("RealSeqEnv")
-    if use_remote:
+    spot = (RemoteSpot if config.USE_REMOTE_SPOT else Spot)("RealSeqEnv")
+    if config.USE_REMOTE_SPOT:
         try:
             main(spot, args.use_mixer, config)
         finally:

@@ -5,6 +5,14 @@ import time
 import cv2
 import gym
 
+from spot_rl.utils.mask_rcnn_node import (
+    generate_mrcnn_detections,
+    get_deblurgan_model,
+    get_mrcnn_model,
+    pred2string,
+)
+from spot_rl.utils.timer import Stopwatch
+
 try:
     import magnum as mn
 except:
@@ -20,9 +28,9 @@ try:
 except:
     pass
 
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import Image
 from spot_wrapper.spot import Spot, wrap_heading
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
 from spot_rl.spot_ros_node import (
     MASK_RCNN_VIZ_TOPIC,
@@ -31,14 +39,31 @@ from spot_rl.spot_ros_node import (
     TEXT_TO_SPEECH_TOPIC,
     SpotRosSubscriber,
 )
-from spot_rl.utils.utils import object_id_to_object_name
+from spot_rl.utils.utils import FixSizeOrderedDict, object_id_to_object_name
 
-MAX_CMD_DURATION = 3.0
+MAX_CMD_DURATION = 0.5
 GRASP_VIS_DIR = osp.join(
     osp.dirname(osp.dirname(osp.abspath(__file__))), "grasp_visualizations"
 )
 if not osp.isdir(GRASP_VIS_DIR):
     os.mkdir(GRASP_VIS_DIR)
+
+
+# ROS Topics
+# Parallel inference topics
+INIT_MASK_RCNN = "/initiate_mask_rcnn_node"
+KILL_MASK_RCNN = "/kill_mask_rcnn_node"
+IMAGE_SCALE_TOPIC = "/mask_rcnn_image_scale"
+
+DETECTIONS_TOPIC = "/mask_rcnn_detections"
+
+INIT_DEPTH_FILTERING = "/initiate_depth_filtering"
+KILL_DEPTH_FILTERING = "/kill_depth_filtering"
+
+FILTERED_HEAD_DEPTH_TOPIC = "/filtered_head_depth_topic"
+FILTERED_GRIPPER_DEPTH_TOPIC = "/filtered_gripper_depth_topic"
+
+DETECTIONS_BUFFER_LEN = 10
 
 
 def pad_action(action):
@@ -63,17 +88,18 @@ def rescale_actions(actions, action_thresh=0.05, silence_only=False):
 
 
 class SpotBaseEnv(SpotRosSubscriber, gym.Env):
-    def __init__(
-        self, config, spot: Spot, mask_rcnn_weights=None, mask_rcnn_device=None
-    ):
-        super().__init__("spot_reality_gym")
+    def __init__(self, config, spot: Spot, stopwatch=None):
+        super().__init__("spot_reality_gym", is_blind=config.PARALLEL_INFERENCE_MODE)
+
         self.config = config
         self.spot = spot
+        if stopwatch is None:
+            stopwatch = Stopwatch()
+        self.stopwatch = stopwatch
 
         # General environment parameters
         self.ctrl_hz = config.CTRL_HZ
         self.max_episode_steps = config.MAX_EPISODE_STEPS
-        self.should_end = False
         self.num_steps = 0
         self.reset_ran = False
 
@@ -90,24 +116,8 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.locked_on_object_count = 0
         self.grasp_attempted = False
         self.place_attempted = False
+        self.detection_timestamp = -1
 
-        # Mask RCNN / Gaze
-        self.use_deblurgan = config.USE_DEBLURGAN and mask_rcnn_weights is not None
-        if mask_rcnn_weights is not None:
-            self.mrcnn = MaskRcnnInference(
-                mask_rcnn_weights, score_thresh=0.7, device=mask_rcnn_device
-            )
-            if self.use_deblurgan:
-                self.deblur_gan = DeblurGANv2(weights_path=config.WEIGHTS.DEBLURGAN)
-                # Very first inference is always slow; run a random image
-                self.deblur_gan(np.zeros([256, 256, 3]))
-            else:
-                self.deblur_gan = None
-        else:
-            self.mrcnn = None
-        self.mrcnn_viz_pub = rospy.Publisher(
-            MASK_RCNN_VIZ_TOPIC, CompressedImage, queue_size=1
-        )
         self.forget_target_object_steps = config.FORGET_TARGET_OBJECT_STEPS
         self.curr_forget_steps = 0
         self.obj_center_pixel = None
@@ -115,13 +125,88 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.last_target_obj = None
         self.use_mrcnn = True
         self.target_object_distance = -1
+        self.detections_str_synced = "None"
+        self.latest_synchro_obj_detection = None
+        self.mrcnn_viz = None
+        self.detections_buffer = {
+            k: FixSizeOrderedDict(maxlen=DETECTIONS_BUFFER_LEN)
+            for k in ["detections", "filtered_depth", "viz"]
+        }
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(TEXT_TO_SPEECH_TOPIC, String, queue_size=1)
 
+        # Mask RCNN / Gaze
+        self.parallel_inference_mode = config.PARALLEL_INFERENCE_MODE
+        if config.PARALLEL_INFERENCE_MODE:
+            self.filtered_head_depth = None
+            self.filtered_gripper_depth = None
+            if config.USE_MRCNN:
+                rospy.Subscriber(DETECTIONS_TOPIC, String, self.detections_cb)
+                rospy.Subscriber(
+                    FILTERED_GRIPPER_DEPTH_TOPIC,
+                    Image,
+                    self.filtered_gripper_depth_cb,
+                    queue_size=1,
+                    buff_size=2 ** 30,
+                )
+                print("Parallel inference selected: Waiting for Mask R-CNN msgs...")
+                st = time.time()
+                while (
+                    len(self.detections_buffer["detections"]) == 0
+                    and time.time() < st + 5
+                ):
+                    pass
+                assert (
+                    len(self.detections_buffer["detections"]) > 0
+                ), "Mask R-CNN msgs not found!"
+                print("...msgs received.")
+                scale_pub = rospy.Publisher(IMAGE_SCALE_TOPIC, Float32, queue_size=1)
+                scale_pub.publish(config.IMAGE_SCALE)
+            if config.USE_HEAD_CAMERA:
+                rospy.Subscriber(
+                    FILTERED_HEAD_DEPTH_TOPIC,
+                    Image,
+                    self.filtered_head_depth_cb,
+                    queue_size=1,
+                    buff_size=2 ** 30,
+                )
+                print("Parallel inference selected: Waiting for filtered depth msgs...")
+                st = time.time()
+                while self.filtered_head_depth is None and time.time() < st + 5:
+                    pass
+                assert self.filtered_head_depth is not None, "Depth msgs not found!"
+                print("...msgs received.")
+        elif config.USE_MRCNN:
+            self.mrcnn = get_mrcnn_model(config)
+            self.deblur_gan = get_deblurgan_model(config)
+
+        if config.USE_MRCNN:
+            self.mrcnn_viz_pub = rospy.Publisher(
+                MASK_RCNN_VIZ_TOPIC, Image, queue_size=1
+            )
+
+        if not self.parallel_inference_mode:
+            print("Waiting for images...")
+            st = time.time()
+            while self.compressed_imgs_msg is None and time.time() < st + 5:
+                pass
+            assert self.compressed_imgs_msg is not None, "No images received from Spot."
+
+    def detections_cb(self, msg):
+        timestamp, detections_str = msg.data.split("|")
+        self.detections_buffer["detections"][int(timestamp)] = detections_str
+
+    def filtered_head_depth_cb(self, msg):
+        self.filtered_head_depth = msg
+
+    def filtered_gripper_depth_cb(self, msg):
+        self.filtered_gripper_depth = msg
+        self.detections_buffer["filtered_depth"][int(msg.header.stamp.nsecs)] = msg
+
     def viz_callback(self, msg):
-        # This node does not process mrcnn visualizations
-        pass
+        self.mrcnn_viz = msg
+        self.detections_buffer["viz"][int(msg.header.stamp.nsecs)] = msg
 
     def robot_state_callback(self, msg):
         # Transform robot's xy_yaw to be in home frame
@@ -139,7 +224,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         # Reset parameters
         self.num_steps = 0
         self.reset_ran = True
-        self.should_end = False
         self.grasp_attempted = False
         self.use_mrcnn = True
         self.locked_on_object_count = 0
@@ -148,8 +232,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.last_target_obj = None
         self.obj_center_pixel = None
         self.place_attempted = False
+        self.detection_timestamp = -1
 
-        self.uncompress_imgs()
+        if not self.parallel_inference_mode:
+            self.uncompress_imgs()
         observations = self.get_observations()
         return observations
 
@@ -160,6 +246,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         grasp=False,
         place=False,
         max_joint_movement_key="MAX_JOINT_MOVEMENT",
+        nav_silence_only=True,
     ):
         """Moves the arm and returns updated observations
 
@@ -173,31 +260,19 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
         target_yaw = None
-        move_base = False
-        move_arm = False
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(0.8)
-            self.uncompress_imgs()
-            self.update_gripper_detections(save_image=True)
+            time.sleep(1.5)
+            if not self.parallel_inference_mode:
+                self.uncompress_imgs()
+            self.get_gripper_images(save_image=True)
 
-            if self.locked_on_object_count > 0:
-                x, y = self.obj_center_pixel
-                y, x = np.array([y, x]) / np.array([*self.hand_rgb.shape[:2]]) * 100
-                print(f"GRASP ACTION CALLED: Aiming at (x, y): ({x:.2f}%, {y:.2f}%)!")
+            if self.curr_forget_steps == 0:
+                print(f"GRASP CALLED: Aiming at (x, y): {self.obj_center_pixel}!")
                 self.say("Grasping " + self.target_obj_name)
 
                 # The following cmd is blocking
-                success = False
-                timeout = 10
-                start_time = time.time()
-                while not success and time.time() < start_time + timeout:
-                    success = self.spot.grasp_hand_depth(pixel_xy=self.obj_center_pixel)
-                    if not success and time.time() < start_time + timeout:
-                        self.uncompress_imgs()
-                        self.update_gripper_detections(save_image=True)
-                if not success:
-                    raise RuntimeError("Grasping API timed out!")
+                self.attempt_grasp()
 
                 # Just leave the object on the receptacle if desired
                 if self.config.DONT_PICK_UP:
@@ -214,54 +289,47 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             print("PLACE ACTION CALLED: Opening the gripper!")
             self.spot.open_gripper()
             self.place_attempted = True
-        else:
-            if base_action is None:
-                base_action = np.zeros(2)
-            else:
-                base_action = rescale_actions(base_action, silence_only=True)
 
+        if base_action is not None:
+            base_action = rescale_actions(base_action, silence_only=nav_silence_only)
             if np.count_nonzero(base_action) > 0:
                 # Command velocities using the input action
                 lin_vel, ang_vel = base_action
                 lin_vel *= self.max_lin_vel
                 ang_vel *= self.max_ang_vel
-                # No horizontal velocity
                 target_yaw = wrap_heading(self.yaw + ang_vel * 1 / self.ctrl_hz)
-                move_base = True
-
-            if arm_action is None:
-                arm_action = np.zeros(4)
+                base_action = [lin_vel, 0, ang_vel]  # no horizontal velocity
             else:
-                arm_action = rescale_actions(arm_action)
+                base_action = None
 
+        if arm_action is not None:
+            arm_action = rescale_actions(arm_action)
             if np.count_nonzero(arm_action) > 0:
-                move_arm = True
-                scaled_action = arm_action * self.config[max_joint_movement_key]
-                target_positions = self.current_arm_pose + pad_action(scaled_action)
-                target_positions = np.clip(
-                    target_positions, self.arm_lower_limits, self.arm_upper_limits
+                arm_action *= self.config[max_joint_movement_key]
+                arm_action = self.current_arm_pose + pad_action(arm_action)
+                arm_action = np.clip(
+                    arm_action, self.arm_lower_limits, self.arm_upper_limits
                 )
+            else:
+                arm_action = None
 
-            if move_base and move_arm:
+        if not (grasp or place):
+            if base_action is not None and arm_action is not None:
                 self.spot.set_base_vel_and_arm_pos(
-                    lin_vel,
-                    0.0,
-                    ang_vel * 1.2,  # Spot tends to undershoot this
-                    np.array(target_positions),
+                    *base_action,
+                    arm_action,
                     MAX_CMD_DURATION,
                     disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
                 )
-            elif move_base:
+            elif base_action is not None:
                 self.spot.set_base_velocity(
-                    lin_vel,
-                    0.0,
-                    ang_vel * 1.2,  # Spot tends to undershoot this
+                    *base_action,
                     MAX_CMD_DURATION,
                     disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
                 )
-            elif move_arm:
-                _ = self.spot.set_arm_joint_positions(
-                    positions=target_positions, travel_time=1 / self.ctrl_hz * 0.9
+            elif arm_action is not None:
+                self.spot.set_arm_joint_positions(
+                    positions=arm_action, travel_time=1 / self.ctrl_hz * 0.9
                 )
 
         # Spin until enough time has passed during this step
@@ -271,24 +339,42 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 wrap_heading(self.yaw - target_yaw)
             ) < np.deg2rad(3):
                 # Prevent overshooting of angular velocity
-                self.spot.set_base_velocity(lin_vel, 0, 0, MAX_CMD_DURATION)
+                self.spot.set_base_velocity(base_action[0], 0, 0, MAX_CMD_DURATION)
                 target_yaw = None
 
-        if move_base:
+        if base_action is not None:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
 
-        self.uncompress_imgs()
+        if not self.parallel_inference_mode:
+            self.uncompress_imgs()
         observations = self.get_observations()
 
         self.num_steps += 1
         timeout = self.num_steps == self.max_episode_steps
-        done = timeout or self.get_success(observations) or self.should_end
+        done = timeout or self.get_success(observations)
 
         # Don't need reward or info
         reward = None
         info = {}
 
         return observations, reward, done, info
+
+    def attempt_grasp(self):
+        success = False
+        timeout = 10
+        start_time = time.time()
+        first_iteration = True
+        while not success and time.time() < start_time + timeout:
+            if not first_iteration:
+                if not self.parallel_inference_mode:
+                    self.uncompress_imgs()
+                self.get_gripper_images(save_image=True)
+                if self.curr_forget_steps > 0:
+                    break
+            success = self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=timeout)
+            first_iteration = False
+        if not success:
+            raise RuntimeError("Grasping API timed out!")
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
@@ -313,7 +399,12 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         observations = {}
 
         # Get visual observations
-        front_depth = self.filter_depth(self.front_depth, max_depth=MAX_DEPTH)
+        if self.parallel_inference_mode:
+            front_depth = self.cv_bridge.imgmsg_to_cv2(
+                self.filtered_head_depth, "mono8"
+            )
+        else:
+            front_depth = self.filter_depth(self.front_depth, max_depth=MAX_DEPTH)
 
         front_depth = cv2.resize(
             front_depth, (120 * 2, 212), interpolation=cv2.INTER_AREA
@@ -356,43 +447,53 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return joints
 
     def get_gripper_images(
-        self, left_crop=124, right_crop=60, new_width=228, new_height=240
+        self,
+        left_crop=124,
+        right_crop=60,
+        new_width=228,
+        new_height=240,
+        save_image=False,
     ):
         if self.grasp_attempted:
             # Return blank images if the gripper is being blocked
             blank_img = np.zeros([new_height, new_width, 1], dtype=np.float32)
             return blank_img, blank_img.copy()
-
-        arm_depth = self.hand_depth.copy()
-        orig_height, orig_width = arm_depth.shape[:2]
-        if self.use_mrcnn:
-            obj_bbox = self.update_gripper_detections()
+        if self.parallel_inference_mode:
+            self.detection_timestamp = next(
+                reversed(self.detections_buffer["detections"])
+            )
+            self.detections_str_synced, filtered_gripper_depth = (
+                self.detections_buffer["detections"][self.detection_timestamp],
+                self.detections_buffer["filtered_depth"][self.detection_timestamp],
+            )
+            arm_depth = self.cv_bridge.imgmsg_to_cv2(filtered_gripper_depth, "mono8")
         else:
-            obj_bbox = None
+            arm_depth = self.hand_depth.copy()
+            arm_depth = self.filter_depth(arm_depth, max_depth=MAX_GRIPPER_DEPTH)
 
         # Crop out black vertical bars on the left and right edges of aligned depth img
         arm_depth = arm_depth[:, left_crop:-right_crop]
-
-        # Blur and resize
-        arm_depth = self.filter_depth(arm_depth, max_depth=MAX_GRIPPER_DEPTH)
+        orig_height, orig_width = arm_depth.shape[:2]
         arm_depth = cv2.resize(
             arm_depth, (new_width, new_height), interpolation=cv2.INTER_AREA
         )
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
-
-        # Normalize
         arm_depth = np.float32(arm_depth) / 255.0
 
         # Generate object mask channel
+        if self.use_mrcnn:
+            obj_bbox = self.update_gripper_detections(save_image)
+        else:
+            obj_bbox = None
         arm_depth_bbox = np.zeros_like(arm_depth, dtype=np.float32)
         if obj_bbox is not None:
             x1, y1, x2, y2 = obj_bbox
-            width_scale = new_width / orig_width
-            height_scale = new_height / orig_height
-            x1 = int((x1 - left_crop) * width_scale)
-            x2 = int((x2 - left_crop) * width_scale)
-            y1 = int(y1 * height_scale)
-            y2 = int(y2 * height_scale)
+            width_scale = float(new_width) / float(orig_width)
+            height_scale = float(new_height) / float(orig_height)
+            x1 = int(float(x1 - left_crop) * width_scale)
+            x2 = int(float(x2 - left_crop) * width_scale)
+            y1 = int(float(y1) * height_scale)
+            y2 = int(float(y2) * height_scale)
             arm_depth_bbox[y1:y2, x1:x2] = 1.0
 
             # Estimate distance from the gripper to the object
@@ -411,54 +512,46 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return det
 
     def get_mrcnn_det(self, save_image=False):
-        img = self.hand_rgb.copy()
-        marked_img = img.copy() if save_image else None
-        img_scale_factor = self.config.IMAGE_SCALE
-        height, width = img.shape[:2]
-        if img_scale_factor != 1.0:
-            img = cv2.resize(
+        marked_img = None
+        if self.parallel_inference_mode:
+            detections_str = str(self.detections_str_synced)
+        else:
+            img = self.hand_rgb.copy()
+            if save_image:
+                marked_img = img.copy()
+            pred = generate_mrcnn_detections(
                 img,
-                (0, 0),
-                fx=img_scale_factor,
-                fy=img_scale_factor,
-                interpolation=cv2.INTER_AREA,
+                scale=self.config.IMAGE_SCALE,
+                mrcnn=self.mrcnn,
+                grayscale=True,
+                deblurgan=self.deblur_gan,
             )
-        if self.use_deblurgan:
-            st = time.time()
-            img = self.deblur_gan(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            time_elapsed = time.time() - st
-            if time_elapsed > 0.1:
-                print("[base_env.py]: WARNING!!! DEBLURGAN RUNNING SLOWER THAN 10 Hz")
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        if self.config.GRAYSCALE_MASK_RCNN:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        pred = self.mrcnn.inference(img)
+            if pred["instances"]:
+                viz_img = self.mrcnn.visualize_inference(img, pred)
+                img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
+                self.mrcnn_viz_pub.publish(img_msg)
+            detections_str = pred2string(pred)
 
         # If we haven't seen the current target object in a while, look for new ones
         if self.curr_forget_steps >= self.forget_target_object_steps:
             self.target_obj_name = None
 
-        detections = pred["instances"]
-        if len(detections) > 0:
-            det_str = self.format_detections(detections)
-            viz_img = self.mrcnn.visualize_inference(img, pred)
-            img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
-            self.mrcnn_viz_pub.publish(img_msg)
+        if detections_str != "None":
             detected_classes = [
-                object_id_to_object_name(i.item()) for i in detections.pred_classes
+                object_id_to_object_name(int(i.split(",")[0]))
+                for i in detections_str.split(";")
             ]
             print("[mask_rcnn]: Detected:", ", ".join(detected_classes))
 
             if self.target_obj_name is None:
                 most_confident_class_id = None
                 most_confident_score = 0.0
-                for det_idx in range(len(detections)):
-                    class_id = detections.pred_classes[det_idx]
-                    score = detections.scores[det_idx]
+                for det in detections_str.split(";"):
+                    class_id, score = det.split(",")[:2]
+                    class_id, score = int(class_id), float(score)
                     if score > 0.9 and score > most_confident_score:
                         most_confident_score = score
-                        most_confident_class_id = class_id.item()
+                        most_confident_class_id = class_id
                 if most_confident_score == 0.0:
                     return None
                 self.target_obj_name = object_id_to_object_name(most_confident_class_id)
@@ -469,14 +562,14 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             return None
 
         # Check if desired object is in view of camera
-        target_obj_id = self.target_obj_name
+        targ_obj_name = self.target_obj_name
 
         def correct_class(detection):
             return (
-                object_id_to_object_name(int(detection.split(",")[0])) == target_obj_id
+                object_id_to_object_name(int(detection.split(",")[0])) == targ_obj_name
             )
 
-        matching_detections = [d for d in det_str.split(";") if correct_class(d)]
+        matching_detections = [d for d in detections_str.split(";") if correct_class(d)]
         if not matching_detections:
             return None
 
@@ -486,6 +579,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         def get_score(detection):
             return float(detection.split(",")[1])
 
+        img_scale_factor = self.config.IMAGE_SCALE
         best_detection = sorted(matching_detections, key=get_score)[-1]
         x1, y1, x2, y2 = [
             int(float(i) / img_scale_factor) for i in best_detection.split(",")[-4:]
@@ -497,13 +591,27 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.obj_center_pixel = (cx, cy)
 
         if save_image:
+            if marked_img is None:
+                while self.detection_timestamp not in self.detections_buffer["viz"]:
+                    pass
+                viz_img = self.detections_buffer["viz"][self.detection_timestamp]
+                marked_img = self.cv_bridge.imgmsg_to_cv2(viz_img)
+                marked_img = cv2.resize(
+                    marked_img,
+                    (0, 0),
+                    fx=1 / self.config.IMAGE_SCALE,
+                    fy=1 / self.config.IMAGE_SCALE,
+                    interpolation=cv2.INTER_AREA,
+                )
             marked_img = cv2.circle(marked_img, (cx, cy), 5, (0, 0, 255), -1)
+            marked_img = cv2.rectangle(marked_img, (x1, y1), (x2, y2), (0, 0, 255))
             out_path = osp.join(GRASP_VIS_DIR, f"{time.time()}.png")
             cv2.imwrite(out_path, marked_img)
             print("Saved grasp image as", out_path)
-            img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
+            img_msg = self.cv_bridge.cv2_to_imgmsg(marked_img)
             self.mrcnn_viz_pub.publish(img_msg)
 
+        height, width = (480, 640)
         locked_on = self.locked_on_object(x1, y1, x2, y2, height, width)
         if locked_on:
             self.locked_on_object_count += 1
@@ -550,13 +658,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
     def get_success(self, observations):
         raise NotImplementedError
 
-    def should_end(self):
-        return False
-
     @staticmethod
     def spot2habitat_transform(position, rotation):
-        x, y, z = position.x, position.y, position.z
-        qx, qy, qz, qw = rotation.x, rotation.y, rotation.z, rotation.w
+        x, y, z = position
+        qx, qy, qz, qw = rotation
 
         quat = quaternion.quaternion(qw, qx, qy, qz)
         rotation_matrix = mn.Quaternion(quat.imag, quat.real).to_matrix()
@@ -622,8 +727,9 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return place_dist, xy_dist, z_dist
 
     def get_in_gripper_tf(self):
-        position, rotation = self.spot.get_base_transform_to("link_wr1")
-        wrist_T_base = self.spot2habitat_transform(position, rotation)
+        wrist_T_base = self.spot2habitat_transform(
+            self.link_wr1_position, self.link_wr1_rotation
+        )
         gripper_T_base = wrist_T_base @ mn.Matrix4.translation(self.ee_gripper_offset)
 
         return gripper_T_base

@@ -14,7 +14,10 @@ def main(spot):
     args = parser.parse_args()
     config = construct_config(args.opts)
 
-    env = SpotGazeEnv(config, spot, mask_rcnn_weights=config.WEIGHTS.MRCNN)
+    # Don't need head cameras for Gaze
+    config.USE_HEAD_CAMERA = False
+
+    env = SpotGazeEnv(config, spot)
     env.power_robot()
     policy = GazePolicy(config.WEIGHTS.GAZE, device=config.DEVICE)
     policy.reset()

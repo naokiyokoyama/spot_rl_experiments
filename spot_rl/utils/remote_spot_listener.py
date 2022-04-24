@@ -3,7 +3,6 @@ The code here should be by the Core only. This will relay any received commands 
 to the robot from the Core via Ethernet.
 """
 
-import numpy as np
 import rospy
 from spot_wrapper.spot import Spot
 from std_msgs.msg import Bool, String

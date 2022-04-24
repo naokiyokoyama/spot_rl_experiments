@@ -1,3 +1,4 @@
+import argparse
 import time
 from collections import deque
 
@@ -14,12 +15,13 @@ FPS = 30
 
 
 class SpotRosVisualizer(SpotRosSubscriber):
-    def __init__(self, node_name):
-        super().__init__(node_name)
+    def __init__(self, node_name, headless=False):
+        super().__init__(node_name + "_" + str(int(time.time())))
         self.last_render = time.time()
         self.fps_buffer = deque(maxlen=10)
         self.recording = False
         self.frames = []
+        self.headless = headless
 
     def generate_composite(self):
         # Gather latest images
@@ -32,7 +34,7 @@ class SpotRosVisualizer(SpotRosSubscriber):
             ),
             np.zeros_like(self.hand_rgb)
             if self.det is None
-            else self.cv_bridge.compressed_imgmsg_to_cv2(self.det),
+            else self.cv_bridge.imgmsg_to_cv2(self.det),
         ]
         img_rows = []
         for msgs in [orig_msgs, processed_msgs]:
@@ -77,13 +79,14 @@ class SpotRosVisualizer(SpotRosSubscriber):
 
     def vis_imgs(self):
         # Skip if no messages were updated
-        if self.updated:
+        if self.updated and self.compressed_imgs_msg is not None:
             img = self.generate_composite()
-            if not self.recording:
-                cv2.imshow("ROS Spot Images", img)
-            else:
-                viz_img = self.overlay_text(img, "RECORDING IS ON!")
-                cv2.imshow("ROS Spot Images", viz_img)
+            if not self.headless:
+                if not self.recording:
+                    cv2.imshow("ROS Spot Images", img)
+                else:
+                    viz_img = self.overlay_text(img, "RECORDING IS ON!")
+                    cv2.imshow("ROS Spot Images", viz_img)
             if self.recording:
                 self.frames.append([img.copy(), time.time()])
 
@@ -94,39 +97,55 @@ class SpotRosVisualizer(SpotRosSubscriber):
             self.last_render = time.time()
 
         # Logic for recording video
-        key = cv2.waitKey(1)
-        if key != -1 and ord("r") == key:
-            self.recording = not self.recording
-        if not self.recording and len(self.frames) > 0:
-            # Save the video
-            first_frame, first_timestamp = self.frames[0]
-            viz_img = self.overlay_text(np.zeros_like(first_frame), "SAVING VIDEO...")
+        if not self.headless:
+            key = cv2.waitKey(1)
+            if key != -1 and ord("r") == key:
+                self.recording = not self.recording
+            if not self.recording and len(self.frames) > 0:
+                self.save_video()
+
+    def save_video(self):
+        # Save the video
+        first_frame, first_timestamp = self.frames[0]
+        viz_img = self.overlay_text(np.zeros_like(first_frame), "SAVING VIDEO...")
+        if not self.headless:
             cv2.imshow("ROS Spot Images", viz_img)
             cv2.waitKey(1)
-            height, width = first_frame.shape[:2]
-            out_path = f"{time.time()}.mp4"
-            video = cv2.VideoWriter(out_path, FOUR_CC, FPS, (width, height))
-            curr_time = first_timestamp
-            for idx, (frame, timestamp) in enumerate(tqdm.tqdm(self.frames)):
-                if idx + 1 >= len(self.frames):
+        height, width = first_frame.shape[:2]
+        out_path = f"{time.time()}.mp4"
+        video = cv2.VideoWriter(out_path, FOUR_CC, FPS, (width, height))
+        curr_time = first_timestamp
+        for idx, (frame, timestamp) in enumerate(tqdm.tqdm(self.frames)):
+            if idx + 1 >= len(self.frames):
+                video.write(frame)
+            else:
+                next_timestamp = self.frames[idx + 1][1]
+                while curr_time < next_timestamp:
                     video.write(frame)
-                else:
-                    next_timestamp = self.frames[idx + 1][1]
-                    while curr_time < next_timestamp:
-                        video.write(frame)
-                        curr_time += 1 / FPS
-            video.release()
-            print(f"Saved video to {out_path}!")
-            self.frames = []
+                    curr_time += 1 / FPS
+        video.release()
+        print(f"Saved video to {out_path}!")
+        self.frames = []
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--record", action="store_true")
+    args = parser.parse_args()
+
+    srv = None
     try:
-        srv = SpotRosVisualizer("spot_ros_vis_node")
+        srv = SpotRosVisualizer("spot_ros_vis_node", headless=args.headless)
+        if args.record:
+            srv.recording = True
         while not rospy.is_shutdown():
             srv.vis_imgs()
     finally:
-        cv2.destroyAllWindows()
+        if not args.headless:
+            cv2.destroyAllWindows()
+        if srv is not None and srv.frames:
+            srv.save_video()
 
 
 if __name__ == "__main__":

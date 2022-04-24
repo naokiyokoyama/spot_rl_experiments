@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from spot_wrapper.spot import Spot, SpotCamIds, image_response_to_cv2, scale_depth_img
 from spot_wrapper.utils import say
 from std_msgs.msg import (
@@ -109,36 +109,35 @@ class SpotRosPublisher:
 
 
 class SpotRosSubscriber:
-    def __init__(self, node_name):
+    def __init__(self, node_name, is_blind=False):
         rospy.init_node(node_name, disable_signals=True)
 
         # For generating Image ROS msgs
         self.cv_bridge = CvBridge()
+        if not is_blind:
 
-        # Instantiate subscribers
+            # Instantiate subscribers
+            rospy.Subscriber(
+                COMPRESSED_IMAGES_TOPIC,
+                ByteMultiArray,
+                self.compressed_callback,
+                queue_size=1,
+                buff_size=2 ** 30,
+            )
         rospy.Subscriber(
-            COMPRESSED_IMAGES_TOPIC,
-            ByteMultiArray,
-            self.compressed_callback,
+            MASK_RCNN_VIZ_TOPIC,
+            Image,
+            self.viz_callback,
             queue_size=1,
             buff_size=2 ** 30,
         )
-        rospy.Subscriber(
-            MASK_RCNN_VIZ_TOPIC,
-            CompressedImage,
-            self.viz_callback,
-            queue_size=1,
-            buff_size=2 ** 24,
-        )
+
         rospy.Subscriber(
             ROBOT_STATE_TOPIC,
             Float32MultiArray,
             self.robot_state_callback,
             queue_size=1,
         )
-
-        # Conversion between CompressedImage and cv2
-        self.cv_bridge = CvBridge()
 
         # Msg holders
         self.compressed_imgs_msg = None
@@ -150,16 +149,23 @@ class SpotRosSubscriber:
         self.y = 0.0
         self.yaw = 0.0
         self.current_arm_pose = None
+        self.link_wr1_position, self.link_wr1_rotation = None, None
         self.lock = False
 
         self.updated = False
         rospy.loginfo(f"[{node_name}]: Subscribing has started.")
+        self.last_compressed_subscribe = time.time()
+
+    def viz_callback(self, msg):
+        self.det = msg
+        self.updated = True
 
     def compressed_callback(self, msg):
         if self.lock:
             return
         self.compressed_imgs_msg = msg
         self.updated = True
+        self.last_compressed_subscribe = time.time()
 
     def uncompress_imgs(self):
         assert self.compressed_imgs_msg is not None, "No compressed imgs received!"
@@ -192,13 +198,13 @@ class SpotRosSubscriber:
         if len(eyes) == 2:
             self.front_depth = np.hstack([eyes["right"], eyes["left"]])
 
-    def viz_callback(self, msg):
-        self.det = msg
-        self.updated = True
-
     def robot_state_callback(self, msg):
         self.x, self.y, self.yaw = msg.data[:3]
-        self.current_arm_pose = msg.data[3:]
+        self.current_arm_pose = msg.data[3:-7]
+        self.link_wr1_position, self.link_wr1_rotation = (
+            msg.data[-7:][:3],
+            msg.data[-7:][3:],
+        )
 
     @staticmethod
     def filter_depth(depth_img, max_depth, whiten_black=True):
@@ -240,8 +246,17 @@ class SpotRosProprioceptionPublisher:
         xy_yaw = np.mean(self.nav_pose_buff, axis=0)
 
         joints = self.spot.get_arm_proprioception(robot_state=robot_state).values()
+
+        position, rotation = self.spot.get_base_transform_to("link_wr1")
+        gripper_transform = [position.x, position.y, position.z] + [
+            rotation.x,
+            rotation.y,
+            rotation.z,
+            rotation.w,
+        ]
+
         msg.data = np.array(
-            list(xy_yaw) + [j.position.value for j in joints],
+            list(xy_yaw) + [j.position.value for j in joints] + gripper_transform,
             dtype=np.float32,
         )
 
