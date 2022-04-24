@@ -345,13 +345,14 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 # Prevent overshooting of angular velocity
                 self.spot.set_base_velocity(base_action[0], 0, 0, MAX_CMD_DURATION)
                 target_yaw = None
-
+        self.stopwatch.record("run_actions")
         if base_action is not None:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
 
         if not self.parallel_inference_mode:
             self.uncompress_imgs()
         observations = self.get_observations()
+        self.stopwatch.record("get_observations")
 
         self.num_steps += 1
         timeout = self.num_steps == self.max_episode_steps

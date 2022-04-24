@@ -10,7 +10,6 @@ from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.envs.gaze_env import SpotGazeEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
 from spot_rl.utils.remote_spot import RemoteSpot
-from spot_rl.utils.stopwatch import Stopwatch
 from spot_rl.utils.utils import (
     WAYPOINTS,
     closest_clutter,
@@ -49,8 +48,7 @@ def main(spot, use_mixer, config):
         )
         env_class = SpotMobileManipulationSeqEnv
 
-    stopwatch = Stopwatch()
-    env = env_class(config, spot, stopwatch)
+    env = env_class(config, spot)
     env.power_robot()
     time.sleep(1)
     count = Counter()
@@ -75,7 +73,7 @@ def main(spot, use_mixer, config):
             expert = None
         else:
             expert = Tasks.NAV
-        stopwatch.reset()
+        env.stopwatch.reset()
         while not done:
             if expert is None:
                 base_action, arm_action = policy.act(observations)
@@ -83,13 +81,12 @@ def main(spot, use_mixer, config):
             else:
                 base_action, arm_action = policy.act(observations, expert=expert)
                 nav_silence_only = True
-            stopwatch.record("policy_inference")
+            env.stopwatch.record("policy_inference")
             observations, _, done, info = env.step(
                 base_action=base_action,
                 arm_action=arm_action,
                 nav_silence_only=nav_silence_only,
             )
-            stopwatch.record("env_step")
             if expert is not None:
                 expert = info["correct_skill"]
 
@@ -107,8 +104,7 @@ def main(spot, use_mixer, config):
             if expert is not None and expert != Tasks.NAV:
                 policy.nav_policy.reset()
 
-            if DEBUGGING:
-                stopwatch.print_stats(sort=True, latest=True)
+            env.stopwatch.print_stats(latest=True)
 
     env.say("Executing automatic docking")
     dock_start_time = time.time()
