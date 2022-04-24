@@ -9,6 +9,8 @@ EE_GRIPPER_OFFSET = [0.2, 0.0, 0.05]
 
 def get_global_place_target(spot: Spot):
     position, rotation = spot.get_base_transform_to("link_wr1")
+    position = [position.x, position.y, position.z]
+    rotation = [rotation.x, rotation.y, rotation.z, rotation.w]
     wrist_T_base = SpotBaseEnv.spot2habitat_transform(position, rotation)
     gripper_T_base = wrist_T_base @ mn.Matrix4.translation(
         mn.Vector3(EE_GRIPPER_OFFSET)
