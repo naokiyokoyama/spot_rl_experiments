@@ -13,6 +13,7 @@ orig_to_alias = {
     "envs.place_env": "spot_rl_place_env",
     "baselines.go_to_waypoint": "spot_rl_go_to_waypoint",
     "utils.autodock": "spot_rl_autodock",
+    "utils.run_parallel_inference": "spot_rl_run_parallel_inference",
     "utils.waypoint_recorder": "spot_rl_waypoint_recorder",
     "ros_img_vis": "spot_rl_ros_img_vis",
 }
