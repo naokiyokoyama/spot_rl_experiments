@@ -39,6 +39,7 @@ class RealPolicy:
         config.defrost()
         config.RL.POLICY.OBS_TRANSFORMS.ENABLED_TRANSFORMS = []
         config.freeze()
+        config.RL.POLICY["init"] = False
 
         self.policy = policy_class.from_config(
             config=config,
@@ -84,6 +85,7 @@ class RealPolicy:
                 self.prev_actions,
                 self.not_done_masks,
                 deterministic=True,
+                actions_only=True,
             )
         self.prev_actions.copy_(actions)
         self.not_done_masks = torch.ones(1, 1, dtype=torch.bool, device=self.device)
@@ -215,6 +217,7 @@ class MixerPolicy(RealPolicy):
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
         self.moe_actions = None
         self.policy.deterministic_experts = True
+        self.nav_silence_only = True
 
     def reset(self):
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
@@ -230,6 +233,7 @@ class MixerPolicy(RealPolicy):
                 self.not_done,
                 # deterministic=False,
                 deterministic=True,
+                actions_only=True,
             )
 
         # GPU/CPU torch tensor -> numpy
@@ -237,15 +241,15 @@ class MixerPolicy(RealPolicy):
         actions = actions.squeeze().cpu().numpy()
 
         activated_experts = []
-        corrective_actions = OrderedDict(
-            {
-                "arm": actions[:4],
-                "base": actions[4:6],
-            }
-        )
+        corrective_actions = OrderedDict()
+        corrective_actions["arm"] = actions[:4]
+        corrective_actions["base"] = actions[4:6]
         if actions[-3] > 0:
             activated_experts.append("nav")
             corrective_actions.pop("base")
+            self.nav_silence_only = True
+        else:
+            self.nav_silence_only = False
         if actions[-2] > 0:
             activated_experts.append("gaze")
             corrective_actions.pop("arm")
