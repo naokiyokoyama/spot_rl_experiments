@@ -22,6 +22,8 @@ class SpotRosVisualizer(SpotRosSubscriber):
         self.recording = False
         self.frames = []
         self.headless = headless
+        self.curr_video_time = time.time()
+        self.video = True
 
     def generate_composite(self):
         # Gather latest images
@@ -103,6 +105,10 @@ class SpotRosVisualizer(SpotRosSubscriber):
                 self.recording = not self.recording
             if not self.recording and len(self.frames) > 0:
                 self.save_video()
+
+        if self.recording:
+            if self.video is None:
+                self.video = cv2.VideoWriter(out_path, FOUR_CC, FPS, (width, height))
 
     def save_video(self):
         # Save the video
