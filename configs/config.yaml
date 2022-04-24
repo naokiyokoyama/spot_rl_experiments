@@ -34,8 +34,8 @@ SUCC_XY_DIST: 0.1
 SUCC_Z_DIST: 0.20
 
 # Base action params
-MAX_LIN_VEL: 0.5  # m/s
-MAX_ANG_VEL: 0.523599  # 30 degrees/s, in radians
+MAX_LIN_DIST: 0.25  # meters
+MAX_ANG_DIST: 15.0  # degrees
 
 # Arm action params
 MAX_JOINT_MOVEMENT: 0.0872665  # Gaze arm speed (5 deg)

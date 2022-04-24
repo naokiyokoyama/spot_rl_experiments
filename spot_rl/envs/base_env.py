@@ -104,12 +104,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         self.reset_ran = False
 
         # Base action parameters
-        self.max_lin_vel = config.MAX_LIN_VEL * (self.ctrl_hz / 2.0)
-        self.max_ang_vel = config.MAX_ANG_VEL * (self.ctrl_hz / 2.0)
+        self.max_lin_dist = config.MAX_LIN_DIST
+        self.max_ang_dist = np.deg2rad(config.MAX_ANG_DIST)
 
         # Arm action parameters
         self.initial_arm_joint_angles = np.deg2rad(config.INITIAL_ARM_JOINT_ANGLES)
-        self.max_ang_vel = config.MAX_ANG_VEL
         self.actually_move_arm = config.ACTUALLY_MOVE_ARM
         self.arm_lower_limits = np.deg2rad(config.ARM_LOWER_LIMITS)
         self.arm_upper_limits = np.deg2rad(config.ARM_UPPER_LIMITS)
@@ -272,11 +271,15 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 self.say("Grasping " + self.target_obj_name)
 
                 # The following cmd is blocking
-                self.attempt_grasp()
-
-                # Just leave the object on the receptacle if desired
-                if self.config.DONT_PICK_UP:
-                    self.spot.open_gripper()
+                success = self.attempt_grasp()
+                if success:
+                    # Just leave the object on the receptacle if desired
+                    if self.config.DONT_PICK_UP:
+                        self.spot.open_gripper()
+                    self.grasp_attempted = True
+                else:
+                    self.say("Object at edge, re-trying.")
+                    time.sleep(1)
 
                 # Return to pre-grasp joint positions after grasp
                 self.spot.set_arm_joint_positions(
@@ -284,7 +287,6 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 )
                 # Wait for arm to return to position
                 time.sleep(1.0)
-                self.grasp_attempted = True
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
             self.spot.open_gripper()
@@ -294,11 +296,13 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             base_action = rescale_actions(base_action, silence_only=nav_silence_only)
             if np.count_nonzero(base_action) > 0:
                 # Command velocities using the input action
-                lin_vel, ang_vel = base_action
-                lin_vel *= self.max_lin_vel
-                ang_vel *= self.max_ang_vel
-                target_yaw = wrap_heading(self.yaw + ang_vel * 1 / self.ctrl_hz)
-                base_action = [lin_vel, 0, ang_vel]  # no horizontal velocity
+                lin_dist, ang_dist = base_action
+                lin_dist *= self.max_lin_dist
+                ang_dist *= self.max_ang_dist
+                target_yaw = wrap_heading(self.yaw + ang_dist)
+                # No horizontal velocity
+                ctrl_period = 1 / self.ctrl_hz
+                base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
             else:
                 base_action = None
 
@@ -360,21 +364,12 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         return observations, reward, done, info
 
     def attempt_grasp(self):
-        success = False
-        timeout = 10
-        start_time = time.time()
-        first_iteration = True
-        while not success and time.time() < start_time + timeout:
-            if not first_iteration:
-                if not self.parallel_inference_mode:
-                    self.uncompress_imgs()
-                self.get_gripper_images(save_image=True)
-                if self.curr_forget_steps > 0:
-                    break
-            success = self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=timeout)
-            first_iteration = False
-        if not success:
-            raise RuntimeError("Grasping API timed out!")
+        pre_grasp = time.time()
+        self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=10)
+        error = time.time() - pre_grasp < 3  # TODO: Make this better...
+        if error:
+            return False
+        return True
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
