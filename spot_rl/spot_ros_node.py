@@ -55,7 +55,7 @@ class SpotRosPublisher:
 
     def publish_msgs(self):
         st = time.time()
-        if st < self.last_publish + 0.05:
+        if st < self.last_publish + 1 / 8:
             return
 
         image_responses = self.spot.get_image_responses(self.sources, quality=100)
