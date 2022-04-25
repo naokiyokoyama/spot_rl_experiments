@@ -55,6 +55,9 @@ class SpotRosPublisher:
 
     def publish_msgs(self):
         st = time.time()
+        if st < self.last_publish + 0.05:
+            return
+
         image_responses = self.spot.get_image_responses(self.sources, quality=100)
         retrieval_time = time.time() - st
         # Publish raw images
@@ -109,7 +112,7 @@ class SpotRosPublisher:
 
 
 class SpotRosSubscriber:
-    def __init__(self, node_name, is_blind=False):
+    def __init__(self, node_name, is_blind=False, proprioception=True):
         rospy.init_node(node_name, disable_signals=True)
 
         # For generating Image ROS msgs
@@ -132,12 +135,13 @@ class SpotRosSubscriber:
             buff_size=2 ** 30,
         )
 
-        rospy.Subscriber(
-            ROBOT_STATE_TOPIC,
-            Float32MultiArray,
-            self.robot_state_callback,
-            queue_size=1,
-        )
+        if proprioception:
+            rospy.Subscriber(
+                ROBOT_STATE_TOPIC,
+                Float32MultiArray,
+                self.robot_state_callback,
+                queue_size=1,
+            )
 
         # Msg holders
         self.compressed_imgs_msg = None
@@ -260,8 +264,8 @@ class SpotRosProprioceptionPublisher:
             dtype=np.float32,
         )
 
-        # Limit publishing to 60 Hz max
-        if time.time() - self.last_publish > 1 / 60:
+        # Limit publishing to 10 Hz max
+        if time.time() - self.last_publish > 1 / 10:
             self.pub.publish(msg)
             rospy.loginfo(
                 f"[spot_ros_proprioception_node]: "

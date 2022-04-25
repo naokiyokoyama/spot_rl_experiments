@@ -16,7 +16,7 @@ FPS = 30
 
 class SpotRosVisualizer(SpotRosSubscriber):
     def __init__(self, node_name, headless=False):
-        super().__init__(node_name + "_" + str(int(time.time())))
+        super().__init__(node_name + "_" + str(int(time.time())), proprioception=False)
         self.last_render = time.time()
         self.fps_buffer = deque(maxlen=10)
         self.recording = False
