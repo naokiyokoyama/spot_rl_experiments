@@ -162,6 +162,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         self.succ_angle = np.deg2rad(config.SUCCESS_ANGLE_DIST)
         self.gaze_nav_target = None
         self.place_nav_target = None
+        self.rho = float("inf")
+        self.heading_err = float("inf")
 
         # Gaze
         self.locked_on_object_count = 0
@@ -200,7 +202,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
         return SpotBaseEnv.reset(self)
 
-    def step(self, *args, **kwargs):
+    def step(self, base_action, arm_action, *args, **kwargs):
         _, xy_dist, z_dist = self.get_place_distance()
         place = xy_dist < self.config.SUCC_XY_DIST and z_dist < self.config.SUCC_Z_DIST
         grasp = (
@@ -220,8 +222,21 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         else:
             max_joint_movement_key = "MAX_JOINT_MOVEMENT"
 
+        # Slow the base down if we are close to the nav target
+        if (
+            self.rho < 0.2
+            and abs(self.heading_err) < np.rad2deg(60)
+            and base_action is not None
+            and any([abs(i) > 0.05 for i in base_action])
+        ):
+            self.ctrl_hz = 1.0
+        else:
+            self.ctrl_hz = self.config.CTRL_HZ
+
         observations, reward, done, info = SpotBaseEnv.step(
             self,
+            base_action=base_action,
+            arm_action=arm_action,
             grasp=grasp,
             place=place,
             max_joint_movement_key=max_joint_movement_key,
@@ -242,7 +257,9 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
     def get_observations(self):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
         rho = observations["target_point_goal_gps_and_compass_sensor"][0]
+        self.rho = rho
         goal_heading = observations["goal_heading"][0]
+        self.heading_err = goal_heading
         self.use_mrcnn = rho < 2 and abs(goal_heading) < np.deg2rad(60)
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
