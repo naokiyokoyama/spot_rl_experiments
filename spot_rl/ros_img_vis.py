@@ -1,4 +1,6 @@
 import argparse
+import os
+import os.path as osp
 import time
 from collections import deque
 
@@ -26,6 +28,11 @@ class SpotRosVisualizer(SpotRosSubscriber):
         self.out_path = None
         self.video = None
         self.lock = False
+        self.dim = None
+        self.new_video_started = False
+
+        while self.compressed_imgs_msg is None:
+            pass
 
     def generate_composite(self):
         # Gather latest images
@@ -83,77 +90,89 @@ class SpotRosVisualizer(SpotRosSubscriber):
 
     def vis_imgs(self):
         # Skip if no messages were updated
-        self.lock = not self.recording and len(self.frames) > 0
-        if self.updated and self.compressed_imgs_msg is not None:
-            if self.lock:
-                img = np.zeros_like(self.frames[0][0])
-            else:
-                img = self.generate_composite()
-            if not self.headless:
-                if not self.recording and len(self.frames) == 0:
-                    cv2.imshow("ROS Spot Images", img)
-                elif self.recording:
+        currently_saving = not self.recording and self.frames
+        self.lock = currently_saving
+        img = self.generate_composite() if not currently_saving else None
+        if not self.headless:
+            if img is not None:
+                if self.recording:
                     viz_img = self.overlay_text(img, "RECORDING IS ON!")
                     cv2.imshow("ROS Spot Images", viz_img)
                 else:
-                    viz_img = self.overlay_text(
-                        img,
-                        f"Saving {len(self.frames)} frames to disk...",
-                        color=(0, 255, 0),
-                    )
-                    cv2.imshow("ROS Spot Images", viz_img)
-            if self.recording:
-                self.frames.append([img.copy(), time.time()])
+                    cv2.imshow("ROS Spot Images", img)
 
-            self.updated = False
+            key = cv2.waitKey(1)
+            if key != -1:
+                if ord("r") == key and not currently_saving:
+                    self.recording = not self.recording
+                elif ord("q") == key:
+                    exit()
+
+        if img is not None:
+            self.dim = img.shape[:2]
+
+            # FPS metrics
             self.fps_buffer.append(1 / (time.time() - self.last_render))
             mean_fps = np.mean(self.fps_buffer)
             rospy.loginfo(f"{mean_fps:.2f} FPS (window size: {len(self.fps_buffer)})")
             self.last_render = time.time()
 
-        # Logic for recording video
-        if not self.headless:
-            key = cv2.waitKey(1)
-            if key != -1:
-                if ord("r") == key:
-                    self.recording = not self.recording
-                elif ord("q") == key:
-                    exit()
+            # Video recording
+            if self.recording:
+                self.frames.append(time.time())
+                if self.video is None:
+                    height, width = img.shape[:2]
+                    self.out_path = f"{time.time()}.mp4"
+                    self.video = cv2.VideoWriter(
+                        self.out_path, FOUR_CC, FPS, (width, height)
+                    )
+                self.video.write(img)
 
-        if len(self.frames) > 1:
-            first_frame, first_timestamp = self.frames[0]
-            if self.video is None:
-                height, width = first_frame.shape[:2]
-                self.out_path = f"{time.time()}.mp4"
-                self.video = cv2.VideoWriter(
-                    self.out_path, FOUR_CC, FPS, (width, height)
-                )
-                self.curr_video_time = first_timestamp
-            next_timestamp = self.frames[1][1]
-            if self.curr_video_time < next_timestamp:
-                self.video.write(first_frame)
-                self.curr_video_time += 1 / FPS
-            else:
-                self.frames.pop(0)
-
-        if not self.recording and len(self.frames) == 1 and self.video is not None:
-            self.video.write(self.frames.pop()[0])
-            self.video.release()
-            print(f"Saved video to {self.out_path}!")
-            self.video = None
+        if currently_saving and not self.recording:
+            self.save_video()
 
     def save_video(self):
-        for idx, (frame, timestamp) in enumerate(tqdm.tqdm(self.frames)):
-            if idx + 1 >= len(self.frames):
-                self.video.write(frame)
-            else:
-                next_timestamp = self.frames[idx + 1][1]
-                while self.curr_video_time < next_timestamp:
-                    self.video.write(frame)
-                    self.curr_video_time += 1 / FPS
+        if self.video is None:
+            return
+        # Close window while we work
+        cv2.destroyAllWindows()
+
+        # Save current buffer
         self.video.release()
-        print(f"Saved video to {self.out_path}!")
-        self.frames = []
+        old_video = cv2.VideoCapture(self.out_path)
+        ret, img = old_video.read()
+
+        # Re-make video with correct timing
+        height, width = self.dim
+        self.new_video_started = True
+        new_video = cv2.VideoWriter(
+            self.out_path.replace(".mp4", "_final.mp4"),
+            FOUR_CC,
+            FPS,
+            (width, height),
+        )
+        curr_video_time = self.frames[0]
+        for idx, timestamp in enumerate(tqdm.tqdm(self.frames)):
+            if not ret:
+                break
+            if idx + 1 >= len(self.frames):
+                new_video.write(img)
+            else:
+                next_timestamp = self.frames[idx + 1]
+                while curr_video_time < next_timestamp:
+                    new_video.write(img)
+                    curr_video_time += 1 / FPS
+            ret, img = old_video.read()
+
+        new_video.release()
+        os.remove(self.out_path)
+        self.video, self.out_path, self.frames = None, None, []
+        self.new_video_started = False
+
+    def delete_videos(self):
+        for i in [self.out_path, self.out_path.replace(".mp4", "_final.mp4")]:
+            if osp.isfile(i):
+                os.remove(i)
 
 
 def main():
@@ -169,11 +188,21 @@ def main():
             srv.recording = True
         while not rospy.is_shutdown():
             srv.vis_imgs()
-    finally:
+    except:
+        print("Ending script.")
         if not args.headless:
             cv2.destroyAllWindows()
-        if srv is not None and srv.frames:
-            srv.save_video()
+        if srv is not None:
+            try:
+                if srv.new_video_started:
+                    print("Deleting unfinished videos.")
+                    srv.delete_videos()
+                else:
+                    srv.save_video()
+            except:
+                print("Deleting unfinished videos")
+                srv.delete_videos()
+                exit()
 
 
 if __name__ == "__main__":
