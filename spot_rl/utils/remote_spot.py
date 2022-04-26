@@ -122,6 +122,7 @@ class RemoteSpot(Spot):
 
     def dock(self, *args, **kwargs):
         self.send_cmd("dock", *args, **kwargs)
+        return self.blocking(timeout=20)
 
     def power_on(self, *args, **kwargs):
         self.init_robot.publish(True)
