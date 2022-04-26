@@ -216,7 +216,7 @@ class MixerPolicy(RealPolicy):
         )
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
         self.moe_actions = None
-        self.policy.deterministic_experts = True
+        self.policy.deterministic_experts = False
         self.nav_silence_only = True
 
     def reset(self):

@@ -486,8 +486,8 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
             x1, y1, x2, y2 = obj_bbox
             width_scale = float(new_width) / float(orig_width)
             height_scale = float(new_height) / float(orig_height)
-            x1 = int(float(x1 - left_crop) * width_scale)
-            x2 = int(float(x2 - left_crop) * width_scale)
+            x1 = max(int(float(x1 - left_crop) * width_scale), 0)
+            x2 = max(int(float(x2 - left_crop) * width_scale), 0)
             y1 = int(float(y1) * height_scale)
             y2 = int(float(y2) * height_scale)
             arm_depth_bbox[y1:y2, x1:x2] = 1.0
