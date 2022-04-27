@@ -360,7 +360,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
 
         # Don't need reward or info
         reward = None
-        info = {}
+        info = {"num_steps": self.num_steps}
 
         return observations, reward, done, info
 

@@ -75,7 +75,7 @@ def main(spot, use_mixer, config):
             expert = Tasks.NAV
         env.stopwatch.reset()
         while not done:
-            if expert is None:
+            if use_mixer:
                 base_action, arm_action = policy.act(observations)
                 nav_silence_only = policy.nav_silence_only
             else:
@@ -87,7 +87,11 @@ def main(spot, use_mixer, config):
                 arm_action=arm_action,
                 nav_silence_only=nav_silence_only,
             )
-            if expert is not None:
+
+            if use_mixer and info.get("grasp_success", False):
+                policy.reset()
+
+            if not use_mixer:
                 expert = info["correct_skill"]
 
             if trip_idx >= NUM_OBJECTS and env.get_nav_success(
@@ -98,10 +102,10 @@ def main(spot, use_mixer, config):
 
             # Print info
             # stats = [f"{k}: {v}" for k, v in info.items()]
-            # print("\t".join(stats))
+            # print(" ".join(stats))
 
             # We reuse nav, so we have to reset it before we use it again.
-            if expert is not None and expert != Tasks.NAV:
+            if not use_mixer and expert != Tasks.NAV:
                 policy.nav_policy.reset()
 
             env.stopwatch.print_stats(latest=True)
@@ -251,6 +255,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             self.place_target = place_target_from_waypoints(waypoint_name)
             self.goal_xy, self.goal_heading = (waypoint[:2], waypoint[2])
             self.navigating_to_place = True
+            info["grasp_success"] = True
 
         return observations, reward, done, info
 
