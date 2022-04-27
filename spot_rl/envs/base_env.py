@@ -372,9 +372,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         pre_grasp = time.time()
         self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=10)
         error = time.time() - pre_grasp < 3  # TODO: Make this better...
-        if error:
-            return False
-        return True
+        return not error
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
