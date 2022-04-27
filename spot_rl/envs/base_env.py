@@ -302,7 +302,11 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 target_yaw = wrap_heading(self.yaw + ang_dist)
                 # No horizontal velocity
                 ctrl_period = 1 / self.ctrl_hz
-                base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
+                # Don't even bother moving if it's just for a bit of distance
+                if abs(lin_dist) < 0.05 and abs(ang_dist) < np.deg2rad(3):
+                    base_action = None
+                else:
+                    base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
             else:
                 base_action = None
 
