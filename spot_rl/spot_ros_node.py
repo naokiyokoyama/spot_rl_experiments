@@ -172,8 +172,8 @@ class SpotRosSubscriber:
         msg.layout.dim, timestamp_dim = msg.layout.dim[:-1], msg.layout.dim[-1]
         latency = (int(str(int(time.time() * 1000))[-6:]) - timestamp_dim.size) / 1000
         print("Latency: ", latency)
-        if latency > 0.5:
-            return
+        # if latency > 0.5:
+        #     return
         self.compressed_imgs_msg = msg
         self.updated = True
         self.last_compressed_subscribe = time.time()
