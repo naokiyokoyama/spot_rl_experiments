@@ -1,4 +1,5 @@
 import argparse
+import time
 
 import blosc
 import numpy as np
@@ -71,6 +72,13 @@ class DepthFilteringNode:
             return
 
         if self.head_depth:
+            msg.layout.dim, timestamp_dim = msg.layout.dim[:-1], msg.layout.dim[-1]
+            latency = (
+                int(str(int(time.time() * 1000))[-6:]) - timestamp_dim.size
+            ) / 1000
+            print("Latency: ", latency)
+            if latency > 0.5:
+                return
             byte_data = (np.array(msg.data) + 128).astype(np.uint8)
             size_and_labels = [
                 (int(dim.size), str(dim.label)) for dim in msg.layout.dim

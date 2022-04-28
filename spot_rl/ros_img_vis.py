@@ -188,7 +188,7 @@ def main():
             srv.recording = True
         while not rospy.is_shutdown():
             srv.vis_imgs()
-    except:
+    except Exception as e:
         print("Ending script.")
         if not args.headless:
             cv2.destroyAllWindows()
@@ -203,6 +203,7 @@ def main():
                 print("Deleting unfinished videos")
                 srv.delete_videos()
                 exit()
+        raise e
 
 
 if __name__ == "__main__":

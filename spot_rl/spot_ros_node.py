@@ -47,7 +47,7 @@ class SpotRosPublisher:
         # Instantiate raw image publishers
         self.sources = list(SRC2MSG.keys())
         self.img_pub = rospy.Publisher(
-            COMPRESSED_IMAGES_TOPIC, ByteMultiArray, queue_size=1
+            COMPRESSED_IMAGES_TOPIC, ByteMultiArray, queue_size=1, tcp_nodelay=True
         )
 
         self.last_publish = time.time()
@@ -99,7 +99,9 @@ class SpotRosPublisher:
         depth_bytes = np.frombuffer(depth_bytes, dtype=np.uint8)
         depth_bytes = depth_bytes.astype(int) - 128
         bytes_data = np.concatenate([depth_bytes, *rgb_bytes])
-        dims = depth_dims + rgb_dims
+        timestamp = int(str(int(st * 1000))[-6:])
+        timestamp_dim = MultiArrayDimension(label="", size=timestamp)
+        dims = depth_dims + rgb_dims + [timestamp_dim]
 
         msg = ByteMultiArray(layout=MultiArrayLayout(dim=dims), data=bytes_data)
         self.img_pub.publish(msg)
@@ -167,6 +169,11 @@ class SpotRosSubscriber:
     def compressed_callback(self, msg):
         if self.lock:
             return
+        msg.layout.dim, timestamp_dim = msg.layout.dim[:-1], msg.layout.dim[-1]
+        latency = (int(str(int(time.time() * 1000))[-6:]) - timestamp_dim.size) / 1000
+        print("Latency: ", latency)
+        if latency > 0.5:
+            return
         self.compressed_imgs_msg = msg
         self.updated = True
         self.last_compressed_subscribe = time.time()
@@ -185,7 +192,10 @@ class SpotRosSubscriber:
         for size, label in size_and_labels:
             end = start + size
             if "depth" in label:
-                img = blosc.unpack_array(byte_data[start:end].tobytes())
+                try:
+                    img = blosc.unpack_array(byte_data[start:end].tobytes())
+                except:
+                    return
             else:
                 rgb_bytes = byte_data[start:end]
                 img = cv2.imdecode(rgb_bytes, cv2.IMREAD_COLOR)
