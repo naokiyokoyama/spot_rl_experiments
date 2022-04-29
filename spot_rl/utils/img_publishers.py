@@ -180,6 +180,10 @@ class SpotProcessedImagesPublisher(SpotImagePublisher):
         rospy.Subscriber(
             self.subscriber_topic, self.subscriber_msg_type, self.cb, queue_size=1
         )
+        rospy.loginfo(f"[{self.name}] is waiting for images...")
+        while self.img_msg is None:
+            pass
+        rospy.loginfo(f"[{self.name}] has received images!")
 
     def cb(self, msg: Image):
         self.img_msg = msg
@@ -220,7 +224,7 @@ class SpotDecompressingRawImagesPublisher(SpotProcessedImagesPublisher):
 
         head_depth_msg = self.cv2_to_msg(imgs[rt.HEAD_DEPTH], "mono8")
         hand_depth_msg = self.cv2_to_msg(imgs[rt.HAND_DEPTH], "mono8")
-        hand_rgb_msg = self.cv2_to_msg(imgs[rt.HANDRGB], "bgr8")
+        hand_rgb_msg = self.cv2_to_msg(imgs[rt.HAND_RGB], "bgr8")
 
         head_depth_msg.header = Header(stamp=timestamp)
         hand_depth_msg.header = Header(stamp=timestamp)
