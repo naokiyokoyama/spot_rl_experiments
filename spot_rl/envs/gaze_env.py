@@ -24,10 +24,14 @@ def main(spot):
     observations = env.reset()
     done = False
     env.say("Starting episode")
+    orig_pos = (float(env.x), float(env.y), float(env.yaw))
     try:
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(arm_action=action)
+        print("Returning to original position...")
+        spot.set_base_position(*orig_pos, end_time=5.0, blocking=True)
+        print("Returned.")
     finally:
         spot.power_off()
 

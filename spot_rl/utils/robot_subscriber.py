@@ -30,7 +30,7 @@ class SpotRobotSubscriberMixin:
     no_raw = False
     proprioception = True
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, spot=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         rospy.init_node(self.node_name, disable_signals=True)
         self.cv_bridge = CvBridge()
@@ -66,7 +66,8 @@ class SpotRobotSubscriberMixin:
                 self.robot_state_callback,
                 queue_size=1,
             )
-            self.spot = Spot(self.node_name)
+            assert spot is not None
+            self.spot = spot
         else:
             self.spot = None
 

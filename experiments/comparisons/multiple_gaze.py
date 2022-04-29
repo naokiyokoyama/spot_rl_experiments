@@ -23,7 +23,7 @@ def main(spot):
     for target_id in range(1, 9):
         goal_x, goal_y, goal_heading = nav_target_from_waypoints("white_box")
         spot.set_base_position(
-            x_pos=goal_x, y_pos=goal_y, yaw=-goal_heading, end_time=100, blocking=True
+            x_pos=goal_x, y_pos=goal_y, yaw=goal_heading, end_time=100, blocking=True
         )
         time.sleep(4)
         policy.reset()

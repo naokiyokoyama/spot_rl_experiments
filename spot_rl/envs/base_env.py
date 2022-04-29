@@ -69,12 +69,17 @@ def rescale_actions(actions, action_thresh=0.05, silence_only=False):
 
 
 class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
-    node_name = "SpotBaseEnv"
+    node_name = "spot_reality_gym"
     no_raw = True
     proprioception = True
 
     def __init__(self, config, spot: Spot, stopwatch=None):
-        super().__init__("spot_reality_gym", is_blind=config.PARALLEL_INFERENCE_MODE)
+        self.detections_buffer = {
+            k: FixSizeOrderedDict(maxlen=DETECTIONS_BUFFER_LEN)
+            for k in ["detections", "filtered_depth", "viz"]
+        }
+
+        super().__init__(spot=spot)
 
         self.config = config
         self.spot = spot
@@ -112,13 +117,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.detections_str_synced = "None"
         self.latest_synchro_obj_detection = None
         self.mrcnn_viz = None
-        self.detections_buffer = {
-            k: FixSizeOrderedDict(maxlen=DETECTIONS_BUFFER_LEN)
-            for k in ["detections", "filtered_depth", "viz"]
-        }
 
         # Text-to-speech
-        self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH_TOPIC, String, queue_size=1)
+        self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
 
         # Mask RCNN / Gaze
         self.parallel_inference_mode = config.PARALLEL_INFERENCE_MODE
@@ -136,7 +137,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     len(self.detections_buffer["detections"]) > 0
                 ), "Mask R-CNN msgs not found!"
                 print("...msgs received.")
-                scale_pub = rospy.Publisher(rt.IMAGE_SCALE_TOPIC, Float32, queue_size=1)
+                scale_pub = rospy.Publisher(rt.IMAGE_SCALE, Float32, queue_size=1)
                 scale_pub.publish(config.IMAGE_SCALE)
         elif config.USE_MRCNN:
             self.mrcnn = get_mrcnn_model(config)
