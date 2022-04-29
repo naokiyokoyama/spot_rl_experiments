@@ -39,6 +39,7 @@ class SpotRobotSubscriberMixin:
 
         # Maps a topic name to the latest msg from it
         self.msgs = {topic: None for topic in subscriptions}
+        self.updated = {topic: False for topic in subscriptions}
 
         for img_topic in subscriptions:
             rospy.Subscriber(
@@ -73,6 +74,7 @@ class SpotRobotSubscriberMixin:
 
     def img_callback(self, topic, msg):
         self.msgs[topic] = msg
+        self.updated[topic] = True
 
     def robot_state_callback(self, msg):
         x, y, yaw = msg.data[:3]
