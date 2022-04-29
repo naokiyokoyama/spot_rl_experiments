@@ -187,30 +187,9 @@ class SpotRosSubscriber:
             for dim in self.compressed_imgs_msg.layout.dim
         ]
         self.lock = False
-        start = 0
-        eyes = {}
-        for size, label in size_and_labels:
-            end = start + size
-            if "depth" in label:
-                try:
-                    img = blosc.unpack_array(byte_data[start:end].tobytes())
-                except:
-                    return
-            else:
-                rgb_bytes = byte_data[start:end]
-                img = cv2.imdecode(rgb_bytes, cv2.IMREAD_COLOR)
-            if label == SpotCamIds.FRONTLEFT_DEPTH:
-                eyes["left"] = img
-            elif label == SpotCamIds.FRONTRIGHT_DEPTH:
-                eyes["right"] = img
-            elif label == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME:
-                self.hand_depth = img
-            elif label == SpotCamIds.HAND_COLOR:
-                self.hand_rgb = img
-            start += size
-
-        if len(eyes) == 2:
-            self.front_depth = np.hstack([eyes["right"], eyes["left"]])
+        self.hand_depth, self.hand_rgb, self.front_depth = uncompress_img_msg(
+            byte_data, size_and_labels
+        )
 
     def robot_state_callback(self, msg):
         self.x, self.y, self.yaw = msg.data[:3]
@@ -286,26 +265,41 @@ class SpotRosProprioceptionPublisher:
             self.last_publish = time.time()
 
 
-class SpotVelocitySubscriber:
-    def __init__(self, spot):
-        self.spot = spot
-        rospy.init_node("spot_ros_velocity_node", disable_signals=True)
-        rospy.Subscriber(
-            ROBOT_VEL_TOPIC, Float32MultiArray, self.vel_callback, queue_size=1
-        )
-        rospy.loginfo("[spot_ros_velocity_node]: Listening for velocity commands.")
-        rospy.spin()
+def uncompress_img_msg(
+    byte_data, size_and_labels, head=True, gripper_depth=True, gripper_rgb=True
+):
+    start = 0
+    eyes = {}
+    hand_depth, hand_rgb, front_depth = None, None, None
+    for size, label in size_and_labels:
+        end = start + size
+        if "depth" in label:
+            try:
+                if head and label == SpotCamIds.FRONTLEFT_DEPTH:
+                    eyes["left"] = blosc.unpack_array(byte_data[start:end].tobytes())
+                elif head and label == SpotCamIds.FRONTRIGHT_DEPTH:
+                    eyes["right"] = blosc.unpack_array(byte_data[start:end].tobytes())
+                elif (
+                    gripper_depth and label == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME
+                ):
+                    hand_depth = blosc.unpack_array(byte_data[start:end].tobytes())
+            except:
+                pass
+        elif gripper_rgb and "color" in label:
+            rgb_bytes = byte_data[start:end]
+            hand_rgb = cv2.imdecode(rgb_bytes, cv2.IMREAD_COLOR)
+        start += size
 
-    def vel_callback(self, msg):
-        lin_vel, hor_vel, ang_vel, duration = msg.data
-        self.spot.set_base_velocity(lin_vel, hor_vel, ang_vel, duration)
+    if len(eyes) == 2:
+        front_depth = np.hstack([eyes["right"], eyes["left"]])
+
+    return hand_depth, hand_rgb, front_depth
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--proprioception", action="store_true")
     parser.add_argument("-t", "--text-to-speech", action="store_true")
-    parser.add_argument("-v", "--velocity", action="store_true")
     args = parser.parse_args()
 
     if args.text_to_speech:
@@ -318,18 +312,14 @@ def main():
         if args.proprioception:
             name = "spot_ros_proprioception_node"
             cls = SpotRosProprioceptionPublisher
-        elif args.velocity:
-            name = "spot_ros_velocity_node"
-            cls = SpotVelocitySubscriber
         else:
             name = "spot_ros_node"
             cls = SpotRosPublisher
 
         spot = Spot(name)
         srn = cls(spot)
-        if not args.velocity:
-            while not rospy.is_shutdown():
-                srn.publish_msgs()
+        while not rospy.is_shutdown():
+            srn.publish_msgs()
 
 
 if __name__ == "__main__":

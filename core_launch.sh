@@ -1,6 +1,11 @@
 conda activate spot_ros
 echo "Killing all tmux sessions..."
-tmux kill-server
+tmux kill-session -t roscore
+tmux kill-session -t headless_estop
+tmux kill-session -t img_pub
+tmux kill-session -t propio_pub
+tmux kill-session -t tts_sub
+tmux kill-session -t remote_spot_listener
 sleep 2
 echo "Starting roscore tmux..."
 tmux new -s roscore -d '$CONDA_PREFIX/bin/roscore'

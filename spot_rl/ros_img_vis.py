@@ -8,17 +8,23 @@ import cv2
 import numpy as np
 import rospy
 import tqdm
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
 from spot_wrapper.utils import resize_to_tallest
 
 from spot_rl.spot_ros_node import SpotRosSubscriber
+from spot_rl.utils.depth_filter_node import (
+    FILTERED_GRIPPER_DEPTH_TOPIC,
+    FILTERED_HEAD_DEPTH_TOPIC,
+)
+from spot_rl.utils.mask_rcnn_node import MASK_RCNN_VIZ_TOPIC
 
 FOUR_CC = cv2.VideoWriter_fourcc(*"MP4V")
 FPS = 30
 
 
-class SpotRosVisualizer(SpotRosSubscriber):
-    def __init__(self, node_name, headless=False):
-        super().__init__(node_name + "_" + str(int(time.time())), proprioception=False)
+class VisualizerMixin:
+    def __init__(self, headless=False):
         self.last_render = time.time()
         self.fps_buffer = deque(maxlen=10)
         self.recording = False
@@ -31,45 +37,13 @@ class SpotRosVisualizer(SpotRosSubscriber):
         self.dim = None
         self.new_video_started = False
 
-        while self.compressed_imgs_msg is None:
-            pass
-
     def generate_composite(self):
-        # Gather latest images
-        self.uncompress_imgs()
-        orig_msgs = [self.front_depth, self.hand_depth[:, 124:-60], self.hand_rgb]
-        processed_msgs = [
-            self.filter_depth(self.front_depth, max_depth=3.5, whiten_black=True),
-            self.filter_depth(
-                self.hand_depth[:, 124:-60], max_depth=1.6, whiten_black=True
-            ),
-            np.zeros_like(self.hand_rgb)
-            if self.det is None
-            else self.cv_bridge.imgmsg_to_cv2(self.det),
-        ]
-        img_rows = []
-        for msgs in [orig_msgs, processed_msgs]:
-            imgs = [i for i in msgs if i is not None]
-            imgs = [
-                i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR)
-                for i in imgs
-            ]
-
-            # Make sure all imgs are same height
-            img_rows.append(resize_to_tallest(imgs, hstack=True))
-        img = np.vstack(img_rows)
-
-        return img
+        raise NotImplementedError
 
     @staticmethod
     def overlay_text(img, text, color=(0, 0, 255)):
         viz_img = img.copy()
-        line, font, font_size, font_thickness = (
-            text,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            2.0,
-            4,
-        )
+        line, font, font_size, font_thickness = (text, cv2.FONT_HERSHEY_SIMPLEX, 2.0, 4)
         text_width, text_height = cv2.getTextSize(
             line, font, font_size, font_thickness
         )[0][:2]
@@ -113,8 +87,8 @@ class SpotRosVisualizer(SpotRosSubscriber):
 
             # FPS metrics
             self.fps_buffer.append(1 / (time.time() - self.last_render))
-            mean_fps = np.mean(self.fps_buffer)
-            rospy.loginfo(f"{mean_fps:.2f} FPS (window size: {len(self.fps_buffer)})")
+            # mean_fps = np.mean(self.fps_buffer)
+            # rospy.loginfo(f"{mean_fps:.2f} FPS (window size: {len(self.fps_buffer)})")
             self.last_render = time.time()
 
             # Video recording
@@ -175,15 +149,109 @@ class SpotRosVisualizer(SpotRosSubscriber):
                 os.remove(i)
 
 
+class SpotRosVisualizer(SpotRosSubscriber, VisualizerMixin):
+    def __init__(self, node_name, headless=False):
+        super().__init__(node_name + "_" + str(int(time.time())), proprioception=False)
+        VisualizerMixin.__init__(self, headless)
+
+        while self.compressed_imgs_msg is None:
+            pass
+
+    def generate_composite(self):
+        # Gather latest images
+        self.uncompress_imgs()
+        orig_msgs = [self.front_depth, self.hand_depth[:, 124:-60], self.hand_rgb]
+        processed_msgs = [
+            self.filter_depth(self.front_depth, max_depth=3.5, whiten_black=True),
+            self.filter_depth(
+                self.hand_depth[:, 124:-60], max_depth=1.6, whiten_black=True
+            ),
+            np.zeros_like(self.hand_rgb)
+            if self.det is None
+            else self.cv_bridge.imgmsg_to_cv2(self.det),
+        ]
+        img_rows = []
+        for msgs in [orig_msgs, processed_msgs]:
+            imgs = [i for i in msgs if i is not None]
+            imgs = [
+                i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR)
+                for i in imgs
+            ]
+
+            # Make sure all imgs are same height
+            img_rows.append(resize_to_tallest(imgs, hstack=True))
+        img = np.vstack(img_rows)
+
+        return img
+
+
+class SpotRosVisualizerLocal(VisualizerMixin):
+    def __init__(self, headless=False):
+        super().__init__(headless)
+        rospy.init_node("spot_ros_visualizer_local")
+        rospy.loginfo("Initializing...")
+
+        self.cv_bridge = CvBridge()
+        self.head_depth_msg = None
+        self.gripper_depth_msg = None
+        self.viz_msg = None
+        rospy.Subscriber(
+            FILTERED_HEAD_DEPTH_TOPIC,
+            Image,
+            self.head_depth_cb,
+            queue_size=1,
+            buff_size=2 ** 30,
+        )
+        rospy.Subscriber(
+            FILTERED_GRIPPER_DEPTH_TOPIC,
+            Image,
+            self.gripper_depth_cb,
+            queue_size=1,
+            buff_size=2 ** 30,
+        )
+        rospy.Subscriber(
+            MASK_RCNN_VIZ_TOPIC,
+            Image,
+            self.viz_cb,
+            queue_size=1,
+            buff_size=2 ** 30,
+        )
+
+    def head_depth_cb(self, msg):
+        self.head_depth_msg = msg
+
+    def gripper_depth_cb(self, msg):
+        self.gripper_depth_msg = msg
+
+    def viz_cb(self, msg):
+        self.viz_msg = msg
+
+    def generate_composite(self):
+        msgs = [self.head_depth_msg, self.gripper_depth_msg, self.viz_msg]
+        imgs = [self.cv_bridge.imgmsg_to_cv2(i) for i in msgs if i is not None]
+        imgs = [
+            i if i.shape[-1] == 3 else cv2.cvtColor(i, cv2.COLOR_GRAY2BGR) for i in imgs
+        ]
+        if not imgs:
+            return None
+
+        # Make sure all imgs are same height
+        return resize_to_tallest(imgs, hstack=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--record", action="store_true")
+    parser.add_argument("--local", action="store_true")
     args = parser.parse_args()
 
     srv = None
     try:
-        srv = SpotRosVisualizer("spot_ros_vis_node", headless=args.headless)
+        if args.local:
+            srv = SpotRosVisualizerLocal(headless=args.headless)
+        else:
+            srv = SpotRosVisualizer("spot_ros_vis_node", headless=args.headless)
         if args.record:
             srv.recording = True
         while not rospy.is_shutdown():

@@ -1,7 +1,6 @@
 import os.path as osp
 import time
 
-import blosc
 import cv2
 import numpy as np
 import rospy
@@ -9,9 +8,9 @@ from cv_bridge import CvBridge
 from deblur_gan.predictor import DeblurGANv2
 from mask_rcnn_detectron2.inference import MaskRcnnInference
 from sensor_msgs.msg import Image
-from spot_wrapper.spot import SpotCamIds
 from std_msgs.msg import Bool, ByteMultiArray, Float32, Header, String
 
+from spot_rl.spot_ros_node import uncompress_img_msg
 from spot_rl.utils.stopwatch import Stopwatch
 from spot_rl.utils.utils import construct_config, get_default_parser
 
@@ -94,29 +93,11 @@ class MaskRCnnNode:
         print("Latency: ", latency)
         if latency > 0.5:
             return None, None
-
-        # Uncompress the gripper images
         byte_data = (np.array(msg.data) + 128).astype(np.uint8)
         size_and_labels = [(int(dim.size), str(dim.label)) for dim in msg.layout.dim]
-        start = 0
-        hand_rgb, hand_depth = None, None
-
-        for size, label in size_and_labels:
-            end = start + size
-            if "depth" in label:
-                img = blosc.unpack_array(byte_data[start:end].tobytes())
-            else:
-                rgb_bytes = byte_data[start:end]
-                img = cv2.imdecode(rgb_bytes, cv2.IMREAD_COLOR)
-
-            if label == SpotCamIds.HAND_DEPTH_IN_HAND_COLOR_FRAME:
-                hand_depth = img
-            elif label == SpotCamIds.HAND_COLOR:
-                hand_rgb = img
-            start += size
-
-        assert hand_rgb is not None
-        assert hand_depth is not None
+        hand_depth, hand_rgb, _ = uncompress_img_msg(
+            byte_data, size_and_labels, head=False
+        )
 
         return hand_rgb, hand_depth
 

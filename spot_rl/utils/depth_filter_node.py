@@ -1,15 +1,18 @@
 import argparse
 import time
 
-import blosc
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from spot_wrapper.spot import SpotCamIds
 from std_msgs.msg import Bool, ByteMultiArray
 
-from spot_rl.spot_ros_node import MAX_DEPTH, MAX_GRIPPER_DEPTH, SpotRosSubscriber
+from spot_rl.spot_ros_node import (
+    MAX_DEPTH,
+    MAX_GRIPPER_DEPTH,
+    SpotRosSubscriber,
+    uncompress_img_msg,
+)
 
 INIT_DEPTH_FILTERING = "/initiate_depth_filtering"
 KILL_DEPTH_FILTERING = "/kill_depth_filtering"
@@ -83,21 +86,9 @@ class DepthFilteringNode:
             size_and_labels = [
                 (int(dim.size), str(dim.label)) for dim in msg.layout.dim
             ]
-            start = 0
-            eyes = {}
-            for size, label in size_and_labels:
-                end = start + size
-                if "depth" in label:
-                    img = blosc.unpack_array(byte_data[start:end].tobytes())
-                    if label == SpotCamIds.FRONTLEFT_DEPTH:
-                        eyes["left"] = img
-                    elif label == SpotCamIds.FRONTRIGHT_DEPTH:
-                        eyes["right"] = img
-                start += size
-            if len(eyes) == 2:
-                depth_img = np.hstack([eyes["right"], eyes["left"]])
-            else:
-                raise RuntimeError("Head depth not found!")
+            _, _, depth_img = uncompress_img_msg(
+                byte_data, size_and_labels, gripper_rgb=False, gripper_depth=False
+            )
         else:
             depth_img = self.cv_bridge.imgmsg_to_cv2(msg, "mono8")
         max_depth = MAX_DEPTH if self.head_depth else MAX_GRIPPER_DEPTH

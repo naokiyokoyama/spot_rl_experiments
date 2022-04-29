@@ -41,7 +41,7 @@ from spot_rl.spot_ros_node import (
 )
 from spot_rl.utils.utils import FixSizeOrderedDict, object_id_to_object_name
 
-MAX_CMD_DURATION = 0.5
+MAX_CMD_DURATION = 5
 GRASP_VIS_DIR = osp.join(
     osp.dirname(osp.dirname(osp.abspath(__file__))), "grasp_visualizations"
 )
@@ -188,7 +188,7 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
         if not self.parallel_inference_mode:
             print("Waiting for images...")
             st = time.time()
-            while self.compressed_imgs_msg is None and time.time() < st + 5:
+            while self.compressed_imgs_msg is None and time.time() < st + 15:
                 pass
             assert self.compressed_imgs_msg is not None, "No images received from Spot."
 
@@ -524,10 +524,10 @@ class SpotBaseEnv(SpotRosSubscriber, gym.Env):
                 grayscale=True,
                 deblurgan=self.deblur_gan,
             )
-            if pred["instances"]:
-                viz_img = self.mrcnn.visualize_inference(img, pred)
-                img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
-                self.mrcnn_viz_pub.publish(img_msg)
+            # if pred["instances"]:
+            #     viz_img = self.mrcnn.visualize_inference(img, pred)
+            #     img_msg = self.cv_bridge.cv2_to_compressed_imgmsg(viz_img)
+            #     self.mrcnn_viz_pub.publish(img_msg)
             detections_str = pred2string(pred)
 
         # If we haven't seen the current target object in a while, look for new ones
