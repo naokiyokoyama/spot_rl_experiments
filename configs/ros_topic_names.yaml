@@ -12,3 +12,10 @@ DETECTIONS_TOPIC: "/mask_rcnn_detections"
 
 ROBOT_STATE: "/robot_state"
 TEXT_TO_SPEECH: "/text_to_speech"
+
+
+# Remote robot topics
+ROBOT_CMD_TOPIC: "/remote_robot_cmd"
+CMD_ENDED_TOPIC: "/remote_robot_cmd_ended"
+INIT_REMOTE_ROBOT: "/init_remote_robot"
+KILL_REMOTE_ROBOT: "/kill_remote_robot"

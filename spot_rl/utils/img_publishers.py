@@ -22,12 +22,16 @@ from std_msgs.msg import (
 )
 
 from spot_rl.utils.depth_map_utils import filter_depth
-from spot_rl.utils.mask_rcnn_utils import (
-    generate_mrcnn_detections,
-    get_deblurgan_model,
-    get_mrcnn_model,
-    pred2string,
-)
+
+try:
+    from spot_rl.utils.mask_rcnn_utils import (
+        generate_mrcnn_detections,
+        get_deblurgan_model,
+        get_mrcnn_model,
+        pred2string,
+    )
+except ModuleNotFoundError:
+    pass
 from spot_rl.utils.stopwatch import Stopwatch
 from spot_rl.utils.utils import construct_config
 from spot_rl.utils.utils import ros_topics as rt
@@ -41,13 +45,14 @@ MAX_HAND_DEPTH = 1.7
 class SpotImagePublisher:
     name = ""
     publisher_topics = []
+    publish_msg_type = Image
 
     def __init__(self):
         rospy.init_node(self.name, disable_signals=True)
         self.cv_bridge = CvBridge()
         self.last_publish = time.time()
         self.pubs = {
-            k: rospy.Publisher(k, Image, queue_size=1, tcp_nodelay=True)
+            k: rospy.Publisher(k, self.publish_msg_type, queue_size=1, tcp_nodelay=True)
             for k in self.publisher_topics
         }
         rospy.loginfo(f"[{self.name}]: Publisher initialized.")
@@ -123,6 +128,7 @@ class SpotLocalRawImagesPublisher(SpotImagePublisher):
 class SpotLocalCompressedImagesPublisher(SpotLocalRawImagesPublisher):
     name = "spot_local_compressed_images_publisher"
     publisher_topics = [rt.COMPRESSED_IMAGES]
+    publish_msg_type = ByteMultiArray
 
     def imgs_to_msgs(self, head_depth, hand_depth, hand_rgb):
         head_depth_bytes = blosc.pack_array(
@@ -314,7 +320,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     assert (
-        len([i[1] for i in args._get_kwargs() if i]) == 1
+        len([i[1] for i in args._get_kwargs() if i[1]]) == 1
     ), "One and only one arg must be provided."
 
     filter_head_depth = args.filter_head_depth
@@ -343,7 +349,7 @@ if __name__ == "__main__":
         else:
             node = SpotLocalCompressedImagesPublisher(spot)
     else:
-        raise RuntimeError("This should be impossible.")
+        assert core or listen or local, "This should be impossible."
 
     if core or listen or local:
         node = None
@@ -357,7 +363,7 @@ if __name__ == "__main__":
                 flags.append("--raw")
             else:
                 raise RuntimeError("This should be impossible.")
-        cmds = [f"python {osp.abspath(__file__)} --{flag}" for flag in flags]
+        cmds = [f"python {osp.abspath(__file__)} {flag}" for flag in flags]
         processes = [subprocess.Popen(cmd, shell=True) for cmd in cmds]
         try:
             while any([p.poll() is None for p in processes]):

@@ -73,7 +73,7 @@ if __name__ == "__main__":
     if args.text_to_speech:
         tts_callback = lambda msg: say(msg.data)
         rospy.init_node("spot_ros_tts_node", disable_signals=True)
-        rospy.Subscriber(rt.TEXT_TO_SPEECH_TOPIC, String, tts_callback, queue_size=1)
+        rospy.Subscriber(rt.TEXT_TO_SPEECH, String, tts_callback, queue_size=1)
         rospy.loginfo("[spot_ros_tts_node]: Listening for text to dictate.")
         rospy.spin()
     elif args.proprioception:
