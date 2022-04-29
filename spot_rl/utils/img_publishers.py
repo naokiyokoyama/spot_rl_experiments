@@ -310,6 +310,7 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
         )
         detections_str = f"{int(timestamp.nsecs)}|{pred2string(pred)}"
 
+        viz_img = self.mrcnn.visualize_inference(viz_img, pred)
         if not detections_str.endswith("None"):
             print(detections_str)
         viz_img_msg = self.cv2_to_msg(viz_img)
