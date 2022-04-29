@@ -156,6 +156,8 @@ class SequentialExperts:
 
 
 class SpotMobileManipulationBaseEnv(SpotGazeEnv):
+    node_name = "SpotMobileManipulationBaseEnv"
+
     def __init__(self, config, spot: Spot, stopwatch=None):
         super().__init__(config, spot)
 
@@ -276,6 +278,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 
 
 class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
+    node_name = "SpotMobileManipulationSeqEnv"
+
     def __init__(self, config, spot: Spot, stopwatch=None):
         super().__init__(config, spot, stopwatch)
         self.current_task = Tasks.NAV

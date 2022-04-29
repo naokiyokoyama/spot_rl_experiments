@@ -3,7 +3,7 @@ import subprocess
 
 this_dir = osp.dirname(osp.abspath(__file__))
 depth_node_script = osp.join(this_dir, "depth_filter_node.py")
-mask_rcnn_node_script = osp.join(this_dir, "mask_rcnn_node.py")
+mask_rcnn_node_script = osp.join(this_dir, "mask_rcnn_utils.py")
 
 cmds = [
     f"python {depth_node_script}",
