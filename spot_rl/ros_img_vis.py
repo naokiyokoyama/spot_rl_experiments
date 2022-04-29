@@ -173,10 +173,20 @@ class SpotRosVisualizer(VisualizerMixin, SpotRobotSubscriberMixin):
                 imgs[1] = imgs[1][:, 124:-60]
 
         img = np.vstack(
-            [resize_to_tallest(i, hstack=True) for i in [raw_imgs, processed_imgs]]
+            [
+                resize_to_tallest(bgrify_grayscale_imgs(i), hstack=True)
+                for i in [raw_imgs, processed_imgs]
+            ]
         )
 
         return img
+
+
+def bgrify_grayscale_imgs(imgs):
+    return [
+        cv2.cvtColor(i, cv2.COLOR_GRAY2BGR) if i.ndim == 2 or i.shape[-1] == 1 else i
+        for i in imgs
+    ]
 
 
 def main():

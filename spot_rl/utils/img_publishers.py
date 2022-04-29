@@ -180,13 +180,21 @@ class SpotProcessedImagesPublisher(SpotImagePublisher):
         rospy.Subscriber(
             self.subscriber_topic, self.subscriber_msg_type, self.cb, queue_size=1
         )
-        rospy.loginfo(f"[{self.name}] is waiting for images...")
+        rospy.loginfo(f"[{self.name}]: is waiting for images...")
         while self.img_msg is None:
             pass
-        rospy.loginfo(f"[{self.name}] has received images!")
+        rospy.loginfo(f"[{self.name}]: has received images!")
+        self.updated = True
+
+    def publish(self):
+        if not self.updated:
+            return
+        super().publish()
+        self.updated = False
 
     def cb(self, msg: Image):
         self.img_msg = msg
+        self.updated = True
 
 
 class SpotDecompressingRawImagesPublisher(SpotProcessedImagesPublisher):
@@ -201,6 +209,11 @@ class SpotDecompressingRawImagesPublisher(SpotProcessedImagesPublisher):
         img_msg = deepcopy(self.img_msg)
 
         py_timestamp = float(img_msg.layout.dim[-1].label)
+        latency = time.time() - py_timestamp
+        if latency < 0.5:
+            rospy.loginfo(f"[{self.name}]: Latency is {latency:.2f} sec.")
+        else:
+            rospy.logwarn(f"[{self.name}]: Latency is {latency:.2f} sec!")
         timestamp = rospy.Time.from_sec(py_timestamp)
 
         byte_data = (np.array(img_msg.data) + 128).astype(np.uint8)
@@ -244,21 +257,21 @@ class SpotFilteredDepthImagesPublisher(SpotProcessedImagesPublisher):
         filtered_depth = filter_depth(depth, max_depth=self.max_depth)
         img_msg = self.cv_bridge.cv2_to_imgmsg(filtered_depth, "mono8")
         img_msg.header = self.img_msg.header
-        self.pubs[self.filtered_depth_topic].publish(img_msg)
+        self.pubs[self.publisher_topics[0]].publish(img_msg)
 
 
 class SpotFilteredHeadDepthImagesPublisher(SpotFilteredDepthImagesPublisher):
     name = "spot_filtered_head_depth_images_publisher"
     subscriber_topic = rt.HEAD_DEPTH
     max_depth = MAX_DEPTH
-    filtered_depth_topic = rt.FILTERED_HEAD_DEPTH
+    publisher_topics = [rt.FILTERED_HEAD_DEPTH]
 
 
 class SpotFilteredHandDepthImagesPublisher(SpotFilteredDepthImagesPublisher):
     name = "spot_filtered_hand_depth_images_publisher"
     subscriber_topic = rt.HAND_DEPTH
     max_depth = MAX_HAND_DEPTH
-    filtered_depth_topic = rt.FILTERED_HAND_DEPTH
+    publisher_topics = [rt.FILTERED_HAND_DEPTH]
 
 
 class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
@@ -296,7 +309,6 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
         detections_str = f"{int(timestamp.nsecs)}|{pred2string(pred)}"
 
         viz_img = self.mrcnn.visualize_inference(viz_img, pred)
-        stopwatch.print_stats()
         if not detections_str.endswith("None"):
             print(detections_str)
         viz_img_msg = self.cv2_to_msg(viz_img)
@@ -337,6 +349,7 @@ if __name__ == "__main__":
     listen = args.listen
     local = args.local
 
+    node = None
     if filter_head_depth:
         node = SpotFilteredHeadDepthImagesPublisher()
     elif filter_hand_depth:
@@ -356,7 +369,6 @@ if __name__ == "__main__":
         assert core or listen or local, "This should be impossible."
 
     if core or listen or local:
-        node = None
         if core:
             flags = ["--compress"]
         else:
@@ -370,7 +382,7 @@ if __name__ == "__main__":
         cmds = [f"python {osp.abspath(__file__)} {flag}" for flag in flags]
         processes = [subprocess.Popen(cmd, shell=True) for cmd in cmds]
         try:
-            while any([p.poll() is None for p in processes]):
+            while all([p.poll() is None for p in processes]):
                 pass
         finally:
             [p.kill() for p in processes]

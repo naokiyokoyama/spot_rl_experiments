@@ -1,4 +1,3 @@
-from collections import defaultdict
 from functools import partial
 
 import numpy as np
@@ -36,10 +35,11 @@ class SpotRobotSubscriberMixin:
         rospy.init_node(self.node_name, disable_signals=True)
         self.cv_bridge = CvBridge()
 
-        # Maps a topic name to the latest msg from it
-        self.msgs = defaultdict(lambda x: None)
-
         subscriptions = NO_RAW_IMG_TOPICS if self.no_raw else IMG_TOPICS
+
+        # Maps a topic name to the latest msg from it
+        self.msgs = {topic: None for topic in subscriptions}
+
         for img_topic in subscriptions:
             rospy.Subscriber(
                 img_topic,
@@ -48,6 +48,10 @@ class SpotRobotSubscriberMixin:
                 queue_size=1,
                 buff_size=2 ** 30,
             )
+        rospy.loginfo(f"[{self.node_name}]: Waiting for images...")
+        while not all([self.msgs[s] is not None for s in subscriptions]):
+            pass
+        rospy.loginfo(f"[{self.node_name}]: Received images!")
 
         self.x = 0.0
         self.y = 0.0
