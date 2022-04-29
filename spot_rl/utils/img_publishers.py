@@ -3,6 +3,7 @@ import os.path as osp
 import subprocess
 import time
 from copy import deepcopy
+from multiprocessing import Process
 
 import blosc
 import cv2
@@ -210,10 +211,11 @@ class SpotDecompressingRawImagesPublisher(SpotProcessedImagesPublisher):
 
         py_timestamp = float(img_msg.layout.dim[-1].label)
         latency = time.time() - py_timestamp
+        latency_msg = f"[{self.name}]: Latency is {latency:.2f} sec"
         if latency < 0.5:
-            rospy.loginfo(f"[{self.name}]: Latency is {latency:.2f} sec.")
+            rospy.loginfo(latency_msg + ".")
         else:
-            rospy.logwarn(f"[{self.name}]: Latency is {latency:.2f} sec!")
+            rospy.logwarn(latency_msg + "!")
         timestamp = rospy.Time.from_sec(py_timestamp)
 
         byte_data = (np.array(img_msg.data) + 128).astype(np.uint8)
@@ -308,7 +310,6 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
         )
         detections_str = f"{int(timestamp.nsecs)}|{pred2string(pred)}"
 
-        viz_img = self.mrcnn.visualize_inference(viz_img, pred)
         if not detections_str.endswith("None"):
             print(detections_str)
         viz_img_msg = self.cv2_to_msg(viz_img)
@@ -385,7 +386,11 @@ if __name__ == "__main__":
             while all([p.poll() is None for p in processes]):
                 pass
         finally:
-            [p.kill() for p in processes]
+            for p in processes:
+                try:
+                    p.kill()
+                except:
+                    pass
     else:
         while not rospy.is_shutdown():
             node.publish()
