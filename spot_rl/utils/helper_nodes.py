@@ -18,9 +18,7 @@ class SpotRosProprioceptionPublisher:
         self.spot = spot
 
         # Instantiate filtered image publishers
-        self.pub = rospy.Publisher(
-            rt.ROBOT_STATE_TOPIC, Float32MultiArray, queue_size=1
-        )
+        self.pub = rospy.Publisher(rt.ROBOT_STATE, Float32MultiArray, queue_size=1)
         self.last_publish = time.time()
         rospy.loginfo("[spot_ros_proprioception_node]: Publishing has started.")
 

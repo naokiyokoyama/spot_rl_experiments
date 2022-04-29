@@ -56,7 +56,7 @@ class SpotRobotSubscriberMixin:
         self.link_wr1_position, self.link_wr1_rotation = None, None
         if self.proprioception:
             rospy.Subscriber(
-                rt.ROBOT_STATE_TOPIC,
+                rt.ROBOT_STATE,
                 Float32MultiArray,
                 self.robot_state_callback,
                 queue_size=1,
