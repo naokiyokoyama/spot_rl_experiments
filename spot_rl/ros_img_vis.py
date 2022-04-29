@@ -8,8 +8,6 @@ import cv2
 import numpy as np
 import rospy
 import tqdm
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
 from spot_wrapper.utils import resize_to_tallest
 
 from spot_rl.utils.utils import ros_topics as rt
@@ -151,7 +149,18 @@ class SpotRosVisualizer(VisualizerMixin, SpotRobotSubscriberMixin):
     no_raw = False
     proprioception = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_seen = {topic: time.time() for topic in self.msgs.keys()}
+        self.fps = {topic: deque(maxlen=10) for topic in self.msgs.keys()}
+
     def generate_composite(self):
+        if not any(self.updated.values()):
+            # No imgs were refreshed. Skip.
+            return None
+
+        refreshed_topics = [k for k, v in self.updated.items() if v]
+
         # Gather latest images
         raw_msgs = [self.msgs[i] for i in RAW_IMG_TOPICS]
         processed_msgs = [self.msgs[i] for i in PROCESSED_IMG_TOPICS]
@@ -179,6 +188,15 @@ class SpotRosVisualizer(VisualizerMixin, SpotRobotSubscriberMixin):
             ]
         )
 
+        for topic in refreshed_topics:
+            curr_time = time.time()
+            self.updated[topic] = False
+            self.fps[topic].append(1 / (curr_time - self.last_seen[topic]))
+            self.last_seen[topic] = curr_time
+
+        all_topics = RAW_IMG_TOPICS + PROCESSED_IMG_TOPICS
+        print(" ".join([f"{k[1:]}: {np.mean(self.fps[k]):.2f}" for k in all_topics]))
+
         return img
 
 
@@ -193,7 +211,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--record", action="store_true")
-    parser.add_argument("--local", action="store_true")
     args = parser.parse_args()
 
     srv = None
