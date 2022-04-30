@@ -28,6 +28,7 @@ class RealPolicy:
         device,
         policy_class=PointNavBaselinePolicy,
     ):
+        print("Loading policy...")
         self.device = torch.device(device)
         if isinstance(checkpoint_path, str):
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -61,6 +62,7 @@ class RealPolicy:
         self.config = config
         self.num_actions = action_space.shape[0]
         self.reset_ran = False
+        print("Policy loaded.")
 
     def reset(self):
         self.reset_ran = True
