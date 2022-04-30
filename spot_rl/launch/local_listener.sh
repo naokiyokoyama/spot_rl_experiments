@@ -1,4 +1,3 @@
-conda activate spot_ros
 echo "Killing img_pub sessions..."
 tmux kill-session -t img_pub
 sleep 1
