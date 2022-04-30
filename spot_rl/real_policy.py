@@ -218,9 +218,21 @@ class MixerPolicy(RealPolicy):
         self.moe_actions = None
         self.policy.deterministic_experts = False
         self.nav_silence_only = True
+        self.test_recurrent_hidden_states = torch.zeros(
+            self.config.NUM_ENVIRONMENTS,
+            1,
+            512 * 3,
+            device=self.device,
+        )
 
     def reset(self):
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
+        self.test_recurrent_hidden_states = torch.zeros(
+            self.config.NUM_ENVIRONMENTS,
+            1,
+            512 * 3,
+            device=self.device,
+        )
 
     def act(self, observations):
         transformed_obs = self.policy.transform_obs([observations], self.not_done)
@@ -228,11 +240,11 @@ class MixerPolicy(RealPolicy):
         with torch.no_grad():
             _, actions, _, self.test_recurrent_hidden_states = self.policy.act(
                 batch,
-                None,
+                self.test_recurrent_hidden_states,
                 None,
                 self.not_done,
-                # deterministic=False,
-                deterministic=True,
+                deterministic=False,
+                # deterministic=True,
                 actions_only=True,
             )
 
