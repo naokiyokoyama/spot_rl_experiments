@@ -44,7 +44,7 @@ GRASP_VIS_DIR = osp.join(
 if not osp.isdir(GRASP_VIS_DIR):
     os.mkdir(GRASP_VIS_DIR)
 
-DETECTIONS_BUFFER_LEN = 20
+DETECTIONS_BUFFER_LEN = 30
 
 
 def pad_action(action):
@@ -266,6 +266,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 # Don't even bother moving if it's just for a bit of distance
                 if abs(lin_dist) < 0.05 and abs(ang_dist) < np.deg2rad(3):
                     base_action = None
+                    target_yaw = None
                 else:
                     base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
             else:
@@ -411,9 +412,16 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             blank_img = np.zeros([new_height, new_width, 1], dtype=np.float32)
             return blank_img, blank_img.copy()
         if self.parallel_inference_mode:
-            self.detection_timestamp = next(
-                reversed(self.detections_buffer["detections"])
-            )
+            self.detection_timestamp = None
+            for i in reversed(self.detections_buffer["detections"]):
+                if (
+                    i in self.detections_buffer["detections"]
+                    and i in self.detections_buffer["filtered_depth"]
+                ):
+                    self.detection_timestamp = i
+                    break
+            if self.detection_timestamp is None:
+                raise RuntimeError("Could not correctly synchronize gaze observations")
             self.detections_str_synced, filtered_hand_depth = (
                 self.detections_buffer["detections"][self.detection_timestamp],
                 self.detections_buffer["filtered_depth"][self.detection_timestamp],
