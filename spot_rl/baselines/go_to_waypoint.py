@@ -37,7 +37,7 @@ def main(spot):
         cmd_id = spot.set_base_position(
             x_pos=goal_x,
             y_pos=goal_y,
-            yaw=-goal_heading,
+            yaw=goal_heading,
             end_time=100,
             **kwargs,
         )

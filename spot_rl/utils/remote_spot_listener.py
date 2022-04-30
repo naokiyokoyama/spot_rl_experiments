@@ -8,10 +8,7 @@ import rospy
 from spot_wrapper.spot import Spot
 from std_msgs.msg import Bool, String
 
-ROBOT_CMD_TOPIC = "/remote_robot_cmd"
-CMD_ENDED_TOPIC = "/remote_robot_cmd_ended"
-INIT_REMOTE_ROBOT = "/init_remote_robot"
-KILL_REMOTE_ROBOT = "/kill_remote_robot"
+from spot_rl.utils.utils import ros_topics as rt
 
 
 class RemoteSpotListener:
@@ -20,13 +17,15 @@ class RemoteSpotListener:
         assert spot.spot_lease is not None, "Need motor control of Spot!"
 
         # This subscriber executes received cmds
-        rospy.Subscriber(ROBOT_CMD_TOPIC, String, self.execute_cmd, queue_size=1)
+        rospy.Subscriber(rt.ROBOT_CMD_TOPIC, String, self.execute_cmd, queue_size=1)
 
         # This publisher signals if a cmd has finished
-        self.pub = rospy.Publisher(CMD_ENDED_TOPIC, Bool, queue_size=1)
+        self.pub = rospy.Publisher(rt.CMD_ENDED_TOPIC, Bool, queue_size=1)
 
         # This subscriber will kill the listener
-        rospy.Subscriber(KILL_REMOTE_ROBOT, Bool, self.kill_remote_robot, queue_size=1)
+        rospy.Subscriber(
+            rt.KILL_REMOTE_ROBOT, Bool, self.kill_remote_robot, queue_size=1
+        )
 
         self.off = False
 
@@ -64,9 +63,11 @@ class RemoteSpotMaster:
     def __init__(self):
         rospy.init_node("RemoteSpotMaster", disable_signals=True)
         # This subscriber executes received cmds
-        rospy.Subscriber(INIT_REMOTE_ROBOT, Bool, self.init_remote_robot, queue_size=1)
+        rospy.Subscriber(
+            rt.INIT_REMOTE_ROBOT, Bool, self.init_remote_robot, queue_size=1
+        )
         self.remote_robot_killer = rospy.Publisher(
-            KILL_REMOTE_ROBOT, Bool, queue_size=1
+            rt.KILL_REMOTE_ROBOT, Bool, queue_size=1
         )
         self.lease = None
         self.remote_robot_listener = None

@@ -73,6 +73,19 @@ DIAMOND_KERNEL_7 = np.asarray(
 )
 
 
+def filter_depth(depth_img, max_depth, whiten_black=True):
+    filtered_depth_img = (
+        fill_in_multiscale(depth_img.astype(np.float32) * (max_depth / 255.0))[0]
+        * (255.0 / max_depth)
+    ).astype(np.uint8)
+    # Recover pixels that weren't black before but were turned black by filtering
+    recovery_pixels = np.logical_and(depth_img != 0, filtered_depth_img == 0)
+    filtered_depth_img[recovery_pixels] = depth_img[recovery_pixels]
+    if whiten_black:
+        filtered_depth_img[filtered_depth_img == 0] = 255
+    return filtered_depth_img
+
+
 def fill_in_fast(
     depth_map,
     max_depth=100.0,

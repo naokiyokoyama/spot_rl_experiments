@@ -41,7 +41,7 @@ def baseline_navigate(spot, waypoint, **kwargs):
     cmd_id = spot.set_base_position(
         x_pos=goal_x,
         y_pos=goal_y,
-        yaw=-goal_heading,
+        yaw=goal_heading,
         end_time=100,
         max_fwd_vel=0.5,
         max_hor_vel=0.05,
@@ -60,7 +60,7 @@ def baseline_navigate(spot, waypoint, **kwargs):
             cmd_id = spot.set_base_position(
                 x_pos=goal_x,
                 y_pos=goal_y,
-                yaw=-goal_heading,
+                yaw=goal_heading,
                 end_time=100,
                 max_fwd_vel=0.5,
                 max_hor_vel=0.1,
@@ -92,7 +92,7 @@ def learned_navigate(spot, waypoint, policy, env):
 def return_to_start(spot, waypoint):
     goal_x, goal_y, goal_heading = waypoint
     spot.set_base_position(
-        x_pos=goal_x, y_pos=goal_y, yaw=-goal_heading, end_time=100, blocking=True
+        x_pos=goal_x, y_pos=goal_y, yaw=goal_heading, end_time=100, blocking=True
     )
 
 

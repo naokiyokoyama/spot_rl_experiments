@@ -15,6 +15,11 @@ WAYPOINTS_YAML = osp.join(configs_dir, "waypoints.yaml")
 with open(WAYPOINTS_YAML) as f:
     WAYPOINTS = yaml.safe_load(f)
 
+ROS_TOPICS = osp.join(configs_dir, "ros_topic_names.yaml")
+ros_topics = CN()
+ros_topics.set_new_allowed(True)
+ros_topics.merge_from_file(ROS_TOPICS)
+
 
 def get_default_parser():
     parser = argparse.ArgumentParser()

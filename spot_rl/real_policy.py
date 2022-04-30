@@ -28,6 +28,7 @@ class RealPolicy:
         device,
         policy_class=PointNavBaselinePolicy,
     ):
+        print("Loading policy...")
         self.device = torch.device(device)
         if isinstance(checkpoint_path, str):
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -61,6 +62,7 @@ class RealPolicy:
         self.config = config
         self.num_actions = action_space.shape[0]
         self.reset_ran = False
+        print("Policy loaded.")
 
     def reset(self):
         self.reset_ran = True
@@ -218,9 +220,21 @@ class MixerPolicy(RealPolicy):
         self.moe_actions = None
         self.policy.deterministic_experts = False
         self.nav_silence_only = True
+        self.test_recurrent_hidden_states = torch.zeros(
+            self.config.NUM_ENVIRONMENTS,
+            1,
+            512 * 3,
+            device=self.device,
+        )
 
     def reset(self):
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
+        self.test_recurrent_hidden_states = torch.zeros(
+            self.config.NUM_ENVIRONMENTS,
+            1,
+            512 * 3,
+            device=self.device,
+        )
 
     def act(self, observations):
         transformed_obs = self.policy.transform_obs([observations], self.not_done)
@@ -228,11 +242,11 @@ class MixerPolicy(RealPolicy):
         with torch.no_grad():
             _, actions, _, self.test_recurrent_hidden_states = self.policy.act(
                 batch,
-                None,
+                self.test_recurrent_hidden_states,
                 None,
                 self.not_done,
-                # deterministic=False,
-                deterministic=True,
+                deterministic=False,
+                # deterministic=True,
                 actions_only=True,
             )
 

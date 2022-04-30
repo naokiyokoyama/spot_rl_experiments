@@ -1,3 +1,5 @@
 ruamel.yaml
 blosc
 numpy
+cv2
+gym

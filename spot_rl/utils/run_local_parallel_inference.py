@@ -2,7 +2,7 @@ import os.path as osp
 import subprocess
 
 this_dir = osp.dirname(osp.abspath(__file__))
-local_parallel_inference = osp.join(this_dir, "local_parallel_inference.py")
+local_parallel_inference = osp.join(this_dir, "img_publishers.py")
 
 cmds = [
     f"python {local_parallel_inference}",
