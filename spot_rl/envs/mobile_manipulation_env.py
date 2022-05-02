@@ -89,7 +89,7 @@ def main(spot, use_mixer, config):
             )
 
             if use_mixer and info.get("grasp_success", False):
-                policy.reset()
+                policy.policy.prev_nav_masks *= 0
 
             if not use_mixer:
                 expert = info["correct_skill"]
@@ -229,15 +229,10 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             max_joint_movement_key = "MAX_JOINT_MOVEMENT"
 
         # Slow the base down if we are close to the nav target
-        if (
-            self.rho < 0.2
-            and abs(self.heading_err) < np.rad2deg(60)
-            and base_action is not None
-            and any([abs(i) > 0.05 for i in base_action])
-        ):
-            self.ctrl_hz = 1.0
+        if self.rho < 0.2 and abs(self.heading_err) < np.rad2deg(60):
+            self.slowdown_base = 0.375
         else:
-            self.ctrl_hz = self.config.CTRL_HZ
+            self.slowdown_base = -1
 
         observations, reward, done, info = SpotBaseEnv.step(
             self,

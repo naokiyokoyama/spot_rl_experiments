@@ -117,6 +117,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.detections_str_synced = "None"
         self.latest_synchro_obj_detection = None
         self.mrcnn_viz = None
+        self.slowdown_base = -1
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -197,6 +198,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.obj_center_pixel = None
         self.place_attempted = False
         self.detection_timestamp = -1
+        self.slowdown_base = -1
 
         observations = self.get_observations()
         return observations
@@ -224,7 +226,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         target_yaw = None
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(1.5)
+            time.sleep(0.5)
             self.get_gripper_images(save_image=True)
 
             if self.curr_forget_steps == 0:
@@ -240,6 +242,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     self.grasp_attempted = True
                 else:
                     self.say("Object at edge, re-trying.")
+                    self.locked_on_object_count = 0
                     time.sleep(1)
 
                 # Return to pre-grasp joint positions after grasp
@@ -284,6 +287,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 arm_action = None
 
         if not (grasp or place):
+            if self.slowdown_base > -1 and base_action is not None:
+                self.ctrl_hz *= self.slowdown_base
+                base_action = np.array(base_action) * self.slowdown_base
             if base_action is not None and arm_action is not None:
                 self.spot.set_base_vel_and_arm_pos(
                     *base_action,
@@ -321,6 +327,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.num_steps += 1
         timeout = self.num_steps == self.max_episode_steps
         done = timeout or self.get_success(observations)
+        self.ctrl_hz = self.config.CTRL_HZ  # revert ctrl_hz in case it slowed down
 
         # Don't need reward or info
         reward = None
@@ -330,9 +337,12 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def attempt_grasp(self):
         pre_grasp = time.time()
-        self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=10)
-        error = time.time() - pre_grasp < 3  # TODO: Make this better...
-        return not error
+        ret = self.spot.grasp_hand_depth(
+            self.obj_center_pixel, top_down_grasp=True, timeout=10
+        )
+        if self.config.USE_REMOTE_SPOT:
+            ret = time.time() - pre_grasp > 3  # TODO: Make this better...
+        return ret
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
