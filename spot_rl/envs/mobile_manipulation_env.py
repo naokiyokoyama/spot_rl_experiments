@@ -158,7 +158,7 @@ class SequentialExperts:
 class SpotMobileManipulationBaseEnv(SpotGazeEnv):
     node_name = "SpotMobileManipulationBaseEnv"
 
-    def __init__(self, config, spot: Spot, stopwatch=None):
+    def __init__(self, config, spot: Spot):
         super().__init__(config, spot)
 
         # Nav
@@ -187,7 +187,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
     def reset(self, waypoint=None, *args, **kwargs):
         # Move arm to initial configuration (w/ gripper open)
         self.spot.set_arm_joint_positions(
-            positions=self.initial_arm_joint_angles, travel_time=0.75
+            positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=0.75
         )
         # Wait for arm to arrive to position
         time.sleep(0.75)
@@ -228,9 +228,14 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         else:
             max_joint_movement_key = "MAX_JOINT_MOVEMENT"
 
-        # Slow the base down if we are close to the nav target
-        if self.rho < 0.2 and abs(self.heading_err) < np.rad2deg(60):
+        # Slow the base down if we are close to the nav target for grasp to limit blur
+        if (
+            not self.grasp_attempted
+            and self.rho < 0.2
+            and abs(self.heading_err) < np.rad2deg(45)
+        ):
             self.slowdown_base = 0.375
+            print("!!!!!!Slow mode!!!!!!")
         else:
             self.slowdown_base = -1
 
@@ -262,7 +267,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         self.rho = rho
         goal_heading = observations["goal_heading"][0]
         self.heading_err = goal_heading
-        self.use_mrcnn = rho < 2 and abs(goal_heading) < np.deg2rad(60)
+        self.use_mrcnn = rho < 1.5 and abs(goal_heading) < np.deg2rad(45)
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
 
@@ -275,8 +280,8 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
 class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     node_name = "SpotMobileManipulationSeqEnv"
 
-    def __init__(self, config, spot: Spot, stopwatch=None):
-        super().__init__(config, spot, stopwatch)
+    def __init__(self, config, spot: Spot):
+        super().__init__(config, spot)
         self.current_task = Tasks.NAV
 
     def reset(self, *args, **kwargs):

@@ -218,7 +218,9 @@ class MixerPolicy(RealPolicy):
         )
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
         self.moe_actions = None
-        self.policy.deterministic_experts = False
+        self.policy.deterministic_nav = False
+        self.policy.deterministic_gaze = True
+        self.policy.deterministic_place = True
         self.nav_silence_only = True
         self.test_recurrent_hidden_states = torch.zeros(
             self.config.NUM_ENVIRONMENTS,
@@ -274,7 +276,10 @@ class MixerPolicy(RealPolicy):
         for v in corrective_actions.values():
             for vv in v:
                 corrective_actions_list.append(f"{vv:.3f}")
-        print("moe:", ", ".join(activated_experts + corrective_actions_list))
+        print(
+            f"gater: {', '.join(activated_experts)}\t"
+            f"corrective: {', '.join(corrective_actions_list)}"
+        )
 
         self.moe_actions = actions
         action_dict = self.policy.action_to_dict(actions, 0)

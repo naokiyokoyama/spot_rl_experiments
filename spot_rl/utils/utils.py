@@ -90,6 +90,10 @@ def get_clutter_amounts():
     return WAYPOINTS["clutter_amounts"]
 
 
+def arr2str(arr):
+    return f"[{', '.join([f'{i:.2f}' for i in arr])}]"
+
+
 class FixSizeOrderedDict(OrderedDict):
     def __init__(self, *args, maxlen=0, **kwargs):
         self._maxlen = maxlen
