@@ -34,7 +34,7 @@ from sensor_msgs.msg import Image
 from spot_wrapper.spot import Spot, wrap_heading
 from std_msgs.msg import Float32, String
 
-from spot_rl.utils.utils import FixSizeOrderedDict, object_id_to_object_name
+from spot_rl.utils.utils import FixSizeOrderedDict, arr2str, object_id_to_object_name
 from spot_rl.utils.utils import ros_topics as rt
 
 MAX_CMD_DURATION = 5
@@ -117,6 +117,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.detections_str_synced = "None"
         self.latest_synchro_obj_detection = None
         self.mrcnn_viz = None
+        self.last_seen_objs = []
+        self.slowdown_base = -1
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -197,6 +199,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.obj_center_pixel = None
         self.place_attempted = False
         self.detection_timestamp = -1
+        self.slowdown_base = -1
 
         observations = self.get_observations()
         return observations
@@ -224,7 +227,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         target_yaw = None
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(1.5)
+            time.sleep(0.5)
             self.get_gripper_images(save_image=True)
 
             if self.curr_forget_steps == 0:
@@ -238,21 +241,26 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     if self.config.DONT_PICK_UP:
                         self.spot.open_gripper()
                     self.grasp_attempted = True
+                    arm_positions = np.deg2rad(self.config.PLACE_ARM_JOINT_ANGLES)
                 else:
                     self.say("Object at edge, re-trying.")
+                    self.locked_on_object_count = 0
+                    arm_positions = np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES)
                     time.sleep(1)
 
-                # Return to pre-grasp joint positions after grasp
+                # Revert joint positions after grasp
                 self.spot.set_arm_joint_positions(
-                    positions=self.initial_arm_joint_angles, travel_time=1.0
+                    positions=arm_positions, travel_time=1.0
                 )
                 # Wait for arm to return to position
                 time.sleep(1.0)
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
+            if self.get_grasp_angle_to_xy() < np.deg2rad(30):
+                self.turn_wrist()
             self.spot.open_gripper()
+            time.sleep(0.3)
             self.place_attempted = True
-
         if base_action is not None:
             base_action = rescale_actions(base_action, silence_only=nav_silence_only)
             if np.count_nonzero(base_action) > 0:
@@ -284,6 +292,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 arm_action = None
 
         if not (grasp or place):
+            if self.slowdown_base > -1 and base_action is not None:
+                self.ctrl_hz *= self.slowdown_base
+                base_action = np.array(base_action) * self.slowdown_base
             if base_action is not None and arm_action is not None:
                 self.spot.set_base_vel_and_arm_pos(
                     *base_action,
@@ -302,15 +313,23 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     positions=arm_action, travel_time=1 / self.ctrl_hz * 0.9
                 )
 
+        base_action_str = "None" if base_action is None else arr2str(base_action)
+        arm_action_str = "None" if arm_action is None else arr2str(arm_action)
+        print(f"base_action: {base_action_str}\tarm_action: {arm_action_str}")
+
         # Spin until enough time has passed during this step
         start_time = time.time()
-        while time.time() < start_time + 1 / self.ctrl_hz:
-            if target_yaw is not None and abs(
-                wrap_heading(self.yaw - target_yaw)
-            ) < np.deg2rad(3):
-                # Prevent overshooting of angular velocity
-                self.spot.set_base_velocity(base_action[0], 0, 0, MAX_CMD_DURATION)
-                target_yaw = None
+        if base_action is not None or arm_action is not None:
+            while time.time() < start_time + 1 / self.ctrl_hz:
+                if target_yaw is not None and abs(
+                    wrap_heading(self.yaw - target_yaw)
+                ) < np.deg2rad(3):
+                    # Prevent overshooting of angular velocity
+                    self.spot.set_base_velocity(base_action[0], 0, 0, MAX_CMD_DURATION)
+                    target_yaw = None
+        elif not (grasp or place):
+            print("!!!! NO ACTIONS CALLED: moving to next step !!!!")
+
         self.stopwatch.record("run_actions")
         if base_action is not None:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
@@ -321,6 +340,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.num_steps += 1
         timeout = self.num_steps == self.max_episode_steps
         done = timeout or self.get_success(observations)
+        self.ctrl_hz = self.config.CTRL_HZ  # revert ctrl_hz in case it slowed down
 
         # Don't need reward or info
         reward = None
@@ -330,9 +350,12 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def attempt_grasp(self):
         pre_grasp = time.time()
-        self.spot.grasp_hand_depth(self.obj_center_pixel, timeout=10)
-        error = time.time() - pre_grasp < 3  # TODO: Make this better...
-        return not error
+        ret = self.spot.grasp_hand_depth(
+            self.obj_center_pixel, top_down_grasp=True, timeout=10
+        )
+        if self.config.USE_REMOTE_SPOT:
+            ret = time.time() - pre_grasp > 3  # TODO: Make this better...
+        return ret
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
@@ -501,18 +524,26 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             if self.target_obj_name is None:
                 most_confident_class_id = None
                 most_confident_score = 0.0
+                good_detections = []
                 for det in detections_str.split(";"):
                     class_id, score = det.split(",")[:2]
                     class_id, score = int(class_id), float(score)
-                    if score > 0.9 and score > most_confident_score:
-                        most_confident_score = score
-                        most_confident_class_id = class_id
+                    if score > 0.8:
+                        good_detections.append(object_id_to_object_name(class_id))
+                        if score > most_confident_score:
+                            most_confident_score = score
+                            most_confident_class_id = class_id
                 if most_confident_score == 0.0:
                     return None
-                self.target_obj_name = object_id_to_object_name(most_confident_class_id)
-                if self.target_obj_name != self.last_target_obj:
-                    self.say("Now targeting " + self.target_obj_name)
-                self.last_target_obj = self.target_obj_name
+                most_confident_name = object_id_to_object_name(most_confident_class_id)
+                if most_confident_name in self.last_seen_objs:
+                    self.target_obj_name = most_confident_name
+                    if self.target_obj_name != self.last_target_obj:
+                        self.say("Now targeting " + self.target_obj_name)
+                    self.last_target_obj = self.target_obj_name
+                self.last_seen_objs = good_detections
+            else:
+                self.last_seen_objs = []
         else:
             return None
 
@@ -579,7 +610,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         return x1, y1, x2, y2
 
     @staticmethod
-    def locked_on_object(x1, y1, x2, y2, height, width, radius=0.2):
+    def locked_on_object(x1, y1, x2, y2, height, width, radius=0.1):
         cy, cx = height // 2, width // 2
         # Locked on if the center of the image is in the bbox
         if x1 < cx < x2 and y1 < cy < y2:
@@ -684,7 +715,50 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         return local_place_target
 
+    def get_grasp_object_angle(self, obj_translation):
+        """Calculates angle between gripper line-of-sight and given global position"""
+        camera_T_matrix = self.get_gripper_transform()
+
+        # Get object location in camera frame
+        camera_obj_trans = (
+            camera_T_matrix.inverted().transform_point(obj_translation).normalized()
+        )
+
+        # Get angle between (normalized) location and unit vector
+        object_angle = angle_between(camera_obj_trans, mn.Vector3(0, 0, -1))
+
+        return object_angle
+
+    def get_grasp_angle_to_xy(self):
+        gripper_tf = self.get_in_gripper_tf()
+        gripper_cam_position = gripper_tf.translation
+        below_gripper = gripper_cam_position + mn.Vector3(0.0, -1.0, 0.0)
+
+        # Get below gripper pos in gripper frame
+        gripper_obj_trans = (
+            gripper_tf.inverted().transform_point(below_gripper).normalized()
+        )
+
+        # Get angle between (normalized) location and unit vector
+        object_angle = angle_between(gripper_obj_trans, mn.Vector3(0, 0, -1))
+
+        return object_angle
+
+    def turn_wrist(self):
+        arm_positions = np.array(self.current_arm_pose)
+        arm_positions[-1] = np.deg2rad(90)
+        self.spot.set_arm_joint_positions(positions=arm_positions, travel_time=0.3)
+        time.sleep(0.6)
+
     def power_robot(self):
         self.spot.power_on()
         self.say("Standing up")
         self.spot.blocking_stand()
+
+
+def angle_between(v1, v2):
+    # stack overflow question ID: 2827393
+    cosine = np.clip(np.dot(v1, v2), -1.0, 1.0)
+    object_angle = np.arccos(cosine)
+
+    return object_angle

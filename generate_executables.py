@@ -13,15 +13,21 @@ orig_to_alias = {
     "envs.place_env": "spot_rl_place_env",
     "baselines.go_to_waypoint": "spot_rl_go_to_waypoint",
     "utils.autodock": "spot_rl_autodock",
-    "utils.run_parallel_inference": "spot_rl_run_parallel_inference",
     "utils.waypoint_recorder": "spot_rl_waypoint_recorder",
     "ros_img_vis": "spot_rl_ros_img_vis",
+    "launch/core.sh": "spot_rl_launch_core",
+    "launch/local_listener.sh": "spot_rl_launch_listener",
+    "launch/local_only.sh": "spot_rl_launch_local",
+    "launch/kill_sessions.sh": "spot_rl_kill_sessions",
 }
 
 print("Generating executables...")
 for orig, alias in orig_to_alias.items():
     exe_path = osp.join(bin_dir, alias)
-    data = f"#!/usr/bin/env bash \n{sys.executable} -m spot_rl.{orig} $@\n"
+    if orig.endswith(".sh"):
+        data = f"#!/usr/bin/env bash \nsource {osp.join(base_dir, orig)}\n"
+    else:
+        data = f"#!/usr/bin/env bash \n{sys.executable} -m spot_rl.{orig} $@\n"
     with open(exe_path, "w") as f:
         f.write(data)
     os.chmod(exe_path, 33277)

@@ -1,4 +1,3 @@
-conda activate spot_ros
 echo "Killing all tmux sessions..."
 tmux kill-session -t roscore
 tmux kill-session -t headless_estop
