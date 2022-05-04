@@ -9,7 +9,7 @@ from std_msgs.msg import Float32MultiArray, String
 
 from spot_rl.utils.utils import ros_topics as rt
 
-NAV_POSE_BUFFER_LEN = 20
+NAV_POSE_BUFFER_LEN = 1
 
 
 class SpotRosProprioceptionPublisher:
