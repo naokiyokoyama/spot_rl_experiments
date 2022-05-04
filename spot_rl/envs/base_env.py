@@ -762,7 +762,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
     def power_robot(self):
         self.spot.power_on()
         self.say("Standing up")
-        self.spot.blocking_stand()
+        try:
+            self.spot.undock()
+        except:
+            print("Undocking failed: just standing up instead...")
+            self.spot.blocking_stand()
 
 
 def angle_between(v1, v2):
