@@ -341,8 +341,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         self.stopwatch.record("run_actions")
         if base_action is not None:
-            # self.spot.set_base_velocity(0, 0, 0, 0.5)
-            self.spot.stand()
+            self.spot.set_base_velocity(0, 0, 0, 0.5)
 
         observations = self.get_observations()
         self.stopwatch.record("get_observations")
