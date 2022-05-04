@@ -119,6 +119,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.mrcnn_viz = None
         self.last_seen_objs = []
         self.slowdown_base = -1
+        self.prev_base_moved = False
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -200,6 +201,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.place_attempted = False
         self.detection_timestamp = -1
         self.slowdown_base = -1
+        self.prev_base_moved = False
 
         observations = self.get_observations()
         return observations
@@ -212,6 +214,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         place=False,
         max_joint_movement_key="MAX_JOINT_MOVEMENT",
         nav_silence_only=True,
+        disable_oa=None,
     ):
         """Moves the arm and returns updated observations
 
@@ -225,6 +228,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         """
         assert self.reset_ran, ".reset() must be called first!"
         target_yaw = None
+        if disable_oa is None:
+            disable_oa = self.config.DISABLE_OBSTACLE_AVOIDANCE
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
             time.sleep(0.5)
@@ -277,9 +282,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     target_yaw = None
                 else:
                     base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
+                    self.prev_base_moved = True
             else:
                 base_action = None
-
+                self.prev_base_moved = False
+        print("disable_oa987569876597657865", disable_oa)
         if arm_action is not None:
             arm_action = rescale_actions(arm_action)
             if np.count_nonzero(arm_action) > 0:
@@ -300,18 +307,21 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     *base_action,
                     arm_action,
                     MAX_CMD_DURATION,
-                    disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
+                    disable_obstacle_avoidance=disable_oa,
                 )
             elif base_action is not None:
                 self.spot.set_base_velocity(
                     *base_action,
                     MAX_CMD_DURATION,
-                    disable_obstacle_avoidance=self.config.DISABLE_OBSTACLE_AVOIDANCE,
+                    disable_obstacle_avoidance=disable_oa,
                 )
             elif arm_action is not None:
                 self.spot.set_arm_joint_positions(
                     positions=arm_action, travel_time=1 / self.ctrl_hz * 0.9
                 )
+
+        if self.prev_base_moved and base_action is None:
+            self.spot.stand()
 
         base_action_str = "None" if base_action is None else arr2str(base_action)
         arm_action_str = "None" if arm_action is None else arr2str(arm_action)
@@ -332,7 +342,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         self.stopwatch.record("run_actions")
         if base_action is not None:
-            self.spot.set_base_velocity(0, 0, 0, 0.5)
+            # self.spot.set_base_velocity(0, 0, 0, 0.5)
+            self.spot.stand()
 
         observations = self.get_observations()
         self.stopwatch.record("get_observations")

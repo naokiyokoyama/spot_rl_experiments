@@ -218,7 +218,7 @@ class MixerPolicy(RealPolicy):
         )
         self.not_done = torch.zeros(1, 1, dtype=torch.bool, device=self.device)
         self.moe_actions = None
-        self.policy.deterministic_nav = False
+        self.policy.deterministic_nav = True
         self.policy.deterministic_gaze = True
         self.policy.deterministic_place = True
         self.nav_silence_only = True

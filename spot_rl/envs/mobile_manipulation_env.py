@@ -238,7 +238,9 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             print("!!!!!!Slow mode!!!!!!")
         else:
             self.slowdown_base = -1
-
+        disable_oa = (
+            False if self.rho > 0.3 and self.config.DISABLE_OA_FOR_NAV else None
+        )
         observations, reward, done, info = SpotBaseEnv.step(
             self,
             base_action=base_action,
@@ -246,6 +248,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             grasp=grasp,
             place=place,
             max_joint_movement_key=max_joint_movement_key,
+            disable_oa=disable_oa,
             *args,
             **kwargs,
         )
