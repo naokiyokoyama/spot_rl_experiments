@@ -216,6 +216,10 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             and not self.grasp_attempted
             and 0.2 < self.target_object_distance < 1.0
         )
+        if grasp and self.config.ASSERT_CENTERING:
+            x, y = self.obj_center_pixel
+            if abs(x / 640 - 0.5) > 0.1 or abs(y / 480 - 0.5) > 0.1:
+                grasp = False
         if (
             not grasp
             and not self.grasp_attempted
@@ -232,9 +236,9 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         if (
             not self.grasp_attempted
             and self.rho < 0.2
-            and abs(self.heading_err) < np.rad2deg(45)
+            and abs(self.heading_err) < np.rad2deg(30)
         ):
-            self.slowdown_base = 0.375
+            self.slowdown_base = 1.0  # Hz
             print("!!!!!!Slow mode!!!!!!")
         else:
             self.slowdown_base = -1

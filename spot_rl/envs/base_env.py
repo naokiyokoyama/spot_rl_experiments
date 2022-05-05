@@ -302,8 +302,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         if not (grasp or place):
             if self.slowdown_base > -1 and base_action is not None:
-                self.ctrl_hz *= self.slowdown_base
-                base_action = np.array(base_action) * self.slowdown_base
+                self.ctrl_hz = self.slowdown_base
+                base_action = np.array(base_action) * self.slowdown_base / self.ctrl_hz
             if base_action is not None and arm_action is not None:
                 self.spot.set_base_vel_and_arm_pos(
                     *base_action,

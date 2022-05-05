@@ -2,8 +2,8 @@ WEIGHTS:
   NAV: "weights/CUTOUT_WT_True_SD_200_ckpt.99.pvp.pth"
   GAZE: "weights/gaze_normal_32_seed300_1649708927_ckpt.49.pth"
   PLACE: "weights/speed_sweep_seed2_speed0.174533_1648669786.ckpt.94.pth"
+#  MIXER: "weights/sweep_9_RT_False_WC_0_NS_128_SD_300_1650155660_ckpt_12.pth"
   MIXER: "weights/sweep_17_SD_200_1651156250_ckpt.12.pth"
-#  MIXER: "weights/sweep_17_SD_200_1651156250_ckpt.14.pth"
   MRCNN: "weights/ikea_apricot_large_only_model_0002999.pth"
   MRCNN_50: "weights/ikea_apricot_r50_normal_100_output_model_0003599.pth"
   DEBLURGAN: "weights/fpn_inception.h5"
@@ -28,6 +28,7 @@ CENTER_TOLERANCE: 0.3
 OBJECT_LOCK_ON_NEEDED: 3
 TARGET_OBJ_NAME: "rubiks_cube"
 DONT_PICK_UP: False
+ASSERT_CENTERING: True
 
 # Place env
 EE_GRIPPER_OFFSET: [0.2, 0.0, 0.05]
