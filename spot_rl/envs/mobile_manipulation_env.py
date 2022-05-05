@@ -238,7 +238,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             and self.rho < 0.2
             and abs(self.heading_err) < np.rad2deg(30)
         ):
-            self.slowdown_base = 1.0  # Hz
+            self.slowdown_base = 0.75  # Hz
             print("!!!!!!Slow mode!!!!!!")
         else:
             self.slowdown_base = -1
