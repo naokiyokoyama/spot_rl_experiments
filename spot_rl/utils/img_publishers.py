@@ -3,7 +3,6 @@ import os.path as osp
 import subprocess
 import time
 from copy import deepcopy
-from multiprocessing import Process
 
 import blosc
 import cv2
@@ -38,7 +37,6 @@ from spot_rl.utils.utils import construct_config
 from spot_rl.utils.utils import ros_topics as rt
 
 MAX_PUBLISH_FREQ = 20
-MAX_POLL_FREQ = 20
 MAX_DEPTH = 3.5
 MAX_HAND_DEPTH = 1.7
 
