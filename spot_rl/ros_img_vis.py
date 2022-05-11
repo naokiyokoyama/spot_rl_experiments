@@ -1,6 +1,8 @@
 import argparse
 import os
 import os.path as osp
+import shlex
+import subprocess as sp
 import time
 from collections import deque
 
@@ -10,6 +12,7 @@ import rospy
 import tqdm
 from spot_wrapper.utils import resize_to_tallest
 
+from spot_rl.utils.robot_subscriber import SpotRobotSubscriberMixin
 from spot_rl.utils.utils import ros_topics as rt
 
 RAW_IMG_TOPICS = [rt.HEAD_DEPTH, rt.HAND_DEPTH, rt.HAND_RGB]
@@ -19,10 +22,6 @@ PROCESSED_IMG_TOPICS = [
     rt.FILTERED_HAND_DEPTH,
     rt.MASK_RCNN_VIZ_TOPIC,
 ]
-
-
-from spot_rl.utils.robot_subscriber import SpotRobotSubscriberMixin
-
 FOUR_CC = cv2.VideoWriter_fourcc(*"MP4V")
 FPS = 30
 
@@ -113,27 +112,41 @@ class VisualizerMixin:
 
         # Re-make video with correct timing
         height, width = self.dim
+        if height % 2 != 0:
+            height -= 1
+        if width % 2 != 0:
+            width -= 1
         self.new_video_started = True
-        new_video = cv2.VideoWriter(
-            self.out_path.replace(".mp4", "_final.mp4"),
-            FOUR_CC,
-            FPS,
-            (width, height),
-        )
         curr_video_time = self.frames[0]
+        process = sp.Popen(
+            shlex.split(
+                f"ffmpeg -y -s {width}x{height} -pixel_format bgr24 -f rawvideo "
+                f"-r {FPS} -i pipe: -vcodec libx264 -pix_fmt yuv420p "
+                f"-crf 24 {self.out_path.replace('.mp4', '_final.mp4')}"
+            ),
+            stdin=sp.PIPE,
+        )
         for idx, timestamp in enumerate(tqdm.tqdm(self.frames)):
             if not ret:
                 break
             if idx + 1 >= len(self.frames):
-                new_video.write(img)
+                process.stdin.write(img.tobytes())
             else:
                 next_timestamp = self.frames[idx + 1]
                 while curr_video_time < next_timestamp:
-                    new_video.write(img)
+                    process.stdin.write(img.tobytes())
                     curr_video_time += 1 / FPS
             ret, img = old_video.read()
+            if ret:
+                img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
-        new_video.release()
+        # Close and flush stdin
+        process.stdin.close()
+        # Wait for sub-process to finish
+        process.wait()
+        # Terminate the sub-process
+        process.terminate()
+
         os.remove(self.out_path)
         self.video, self.out_path, self.frames = None, None, []
         self.new_video_started = False
