@@ -1,3 +1,5 @@
+import time
+
 import cv2
 import numpy as np
 from spot_wrapper.spot import Spot
@@ -9,11 +11,7 @@ from spot_rl.utils.utils import construct_config, get_default_parser
 DEBUG = False
 
 
-def main(spot):
-    parser = get_default_parser()
-    args = parser.parse_args()
-    config = construct_config(args.opts)
-
+def run_env(spot, config, target_obj_id=None, orig_pos=None):
     # Don't need head cameras for Gaze
     config.USE_HEAD_CAMERA = False
 
@@ -21,19 +19,30 @@ def main(spot):
     env.power_robot()
     policy = GazePolicy(config.WEIGHTS.GAZE, device=config.DEVICE)
     policy.reset()
-    observations = env.reset()
+    observations = env.reset(target_obj_id=target_obj_id)
     done = False
     env.say("Starting episode")
-    orig_pos = (float(env.x), float(env.y), float(env.yaw))
-    try:
-        while not done:
-            action = policy.act(observations)
-            observations, _, done, _ = env.step(arm_action=action)
-        print("Returning to original position...")
+    if orig_pos is None:
+        orig_pos = (float(env.x), float(env.y), float(env.yaw))
+    while not done:
+        action = policy.act(observations)
+        observations, _, done, _ = env.step(arm_action=action)
+    print("Returning to original position...")
+    st = time.time()
+    while time.time() < st + 7:
         spot.set_base_position(*orig_pos, end_time=5.0, blocking=True)
-        print("Returned.")
-    finally:
-        spot.power_off()
+        curr_pos = (float(env.x), float(env.y), float(env.yaw))
+        if close_enough(curr_pos, orig_pos):
+            break
+    print("Returned.")
+    return orig_pos
+
+
+def close_enough(pos1, pos2):
+    dist = np.linalg.norm(np.array([pos1[0] - pos2[0], pos1[1] - pos2[1]]))
+    theta = abs(pos1[2] - pos2[2])
+    print(dist, theta)
+    return dist < 0.1 and theta < np.deg2rad(2)
 
 
 class SpotGazeEnv(SpotBaseEnv):
@@ -55,8 +64,17 @@ class SpotGazeEnv(SpotBaseEnv):
         return observations
 
     def step(self, base_action=None, arm_action=None, grasp=False, place=False):
-        if self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED:
+        if (
+            self.locked_on_object_count == self.config.OBJECT_LOCK_ON_NEEDED
+            and self.target_object_distance < 1.0
+        ):
             grasp = True
+
+        if grasp and self.config.ASSERT_CENTERING:
+            x, y = self.obj_center_pixel
+            if abs(x / 640 - 0.5) > 0.3 or abs(y / 480 - 0.5) > 0.3:
+                grasp = False
+                print("OFF CENTER:", x / 640, y / 480)
 
         observations, reward, done, info = super().step(
             base_action, arm_action, grasp, place
@@ -85,5 +103,11 @@ class SpotGazeEnv(SpotBaseEnv):
 
 if __name__ == "__main__":
     spot = Spot("RealGazeEnv")
+    parser = get_default_parser()
+    args = parser.parse_args()
+    config = construct_config(args.opts)
     with spot.get_lease(hijack=True):
-        main(spot)
+        try:
+            run_env(spot, config)
+        finally:
+            spot.power_off()

@@ -99,7 +99,6 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         # Arm action parameters
         self.initial_arm_joint_angles = np.deg2rad(config.INITIAL_ARM_JOINT_ANGLES)
-        self.actually_move_arm = config.ACTUALLY_MOVE_ARM
         self.arm_lower_limits = np.deg2rad(config.ARM_LOWER_LIMITS)
         self.arm_upper_limits = np.deg2rad(config.ARM_UPPER_LIMITS)
         self.locked_on_object_count = 0
@@ -120,6 +119,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.last_seen_objs = []
         self.slowdown_base = -1
         self.prev_base_moved = False
+        self.should_end = False
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -202,6 +202,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.detection_timestamp = -1
         self.slowdown_base = -1
         self.prev_base_moved = False
+        self.should_end = False
 
         observations = self.get_observations()
         return observations
@@ -230,6 +231,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         target_yaw = None
         if disable_oa is None:
             disable_oa = self.config.DISABLE_OBSTACLE_AVOIDANCE
+        grasp = grasp or self.config.GRASP_EVERY_STEP
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
             time.sleep(0.5)
@@ -248,10 +250,10 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                     self.grasp_attempted = True
                     arm_positions = np.deg2rad(self.config.PLACE_ARM_JOINT_ANGLES)
                 else:
-                    self.say("Object at edge, re-trying.")
+                    self.say("BD grasp API failed.")
                     self.locked_on_object_count = 0
                     arm_positions = np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES)
-                    time.sleep(1)
+                    time.sleep(2)
 
                 # Revert joint positions after grasp
                 self.spot.set_arm_joint_positions(
@@ -259,6 +261,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 )
                 # Wait for arm to return to position
                 time.sleep(1.0)
+                if self.config.TERMINATE_ON_GRASP:
+                    self.should_end = True
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
             if self.get_grasp_angle_to_xy() < np.deg2rad(30):
@@ -352,7 +356,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         self.num_steps += 1
         timeout = self.num_steps == self.max_episode_steps
-        done = timeout or self.get_success(observations)
+        done = timeout or self.get_success(observations) or self.should_end
         self.ctrl_hz = self.config.CTRL_HZ  # revert ctrl_hz in case it slowed down
 
         # Don't need reward or info
@@ -765,7 +769,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def power_robot(self):
         self.spot.power_on()
-        self.say("Standing up")
+        # self.say("Standing up")
         try:
             self.spot.undock()
         except:
