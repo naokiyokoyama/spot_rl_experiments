@@ -218,7 +218,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         )
         if grasp and self.config.ASSERT_CENTERING:
             x, y = self.obj_center_pixel
-            if abs(x / 640 - 0.5) > 0.1 or abs(y / 480 - 0.5) > 0.1:
+            if abs(x / 640 - 0.5) > 0.5 or abs(y / 480 - 0.5) > 0.5:
                 grasp = False
         if (
             not grasp
