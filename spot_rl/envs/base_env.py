@@ -453,7 +453,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             return blank_img, blank_img.copy()
         if self.parallel_inference_mode:
             self.detection_timestamp = None
-            for i in reversed(self.detections_buffer["detections"]):
+            # Use .copy() to prevent mutations during iteration
+            for i in reversed(self.detections_buffer["detections"].copy()):
                 if (
                     i in self.detections_buffer["detections"]
                     and i in self.detections_buffer["filtered_depth"]

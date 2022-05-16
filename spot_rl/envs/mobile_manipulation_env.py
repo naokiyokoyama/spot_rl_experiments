@@ -29,7 +29,7 @@ DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 DEBUGGING = False
 
 
-def main(spot, use_mixer, config):
+def main(spot, use_mixer, config, out_path=None):
     if use_mixer:
         policy = MixerPolicy(
             config.WEIGHTS.MIXER,
@@ -52,6 +52,7 @@ def main(spot, use_mixer, config):
     env.power_robot()
     time.sleep(1)
     count = Counter()
+    out_data = []
     for trip_idx in range(NUM_OBJECTS + 1):
         if trip_idx < NUM_OBJECTS:
             # 2 objects per receptacle
@@ -75,6 +76,8 @@ def main(spot, use_mixer, config):
             expert = Tasks.NAV
         env.stopwatch.reset()
         while not done:
+            out_data.append((time.time(), env.x, env.y, env.yaw))
+
             if use_mixer:
                 base_action, arm_action = policy.act(observations)
                 nav_silence_only = policy.nav_silence_only
@@ -109,6 +112,16 @@ def main(spot, use_mixer, config):
                 policy.nav_policy.reset()
 
             env.stopwatch.print_stats(latest=True)
+
+    out_data.append((time.time(), env.x, env.y, env.yaw))
+
+    if out_path is not None:
+        data = (
+            "\n".join([",".join([str(i) for i in t_x_y_yaw]) for t_x_y_yaw in out_data])
+            + "\n"
+        )
+        with open(out_path, "w") as f:
+            f.write(data)
 
     env.say("Executing automatic docking")
     dock_start_time = time.time()
@@ -324,17 +337,18 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
 if __name__ == "__main__":
     parser = get_default_parser()
     parser.add_argument("-m", "--use-mixer", action="store_true")
+    parser.add_argument("--output")
     args = parser.parse_args()
     config = construct_config(args.opts)
     spot = (RemoteSpot if config.USE_REMOTE_SPOT else Spot)("RealSeqEnv")
     if config.USE_REMOTE_SPOT:
         try:
-            main(spot, args.use_mixer, config)
+            main(spot, args.use_mixer, config, args.output)
         finally:
             spot.power_off()
     else:
         with spot.get_lease(hijack=True):
             try:
-                main(spot, args.use_mixer, config)
+                main(spot, args.use_mixer, config, args.output)
             finally:
                 spot.power_off()
