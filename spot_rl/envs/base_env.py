@@ -45,6 +45,14 @@ if not osp.isdir(GRASP_VIS_DIR):
     os.mkdir(GRASP_VIS_DIR)
 
 DETECTIONS_BUFFER_LEN = 30
+LEFT_CROP = 124
+RIGHT_CROP = 60
+NEW_WIDTH = 228
+NEW_HEIGHT = 240
+ORIG_WIDTH = 640
+ORIG_HEIGHT = 480
+WIDTH_SCALE = float(NEW_WIDTH) / float(ORIG_WIDTH)
+HEIGHT_SCALE = float(NEW_HEIGHT) / float(ORIG_HEIGHT)
 
 
 def pad_action(action):
@@ -232,6 +240,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if disable_oa is None:
             disable_oa = self.config.DISABLE_OBSTACLE_AVOIDANCE
         grasp = grasp or self.config.GRASP_EVERY_STEP
+        print(f"raw_base_ac: {arr2str(base_action)}\traw_arm_ac: {arr2str(arm_action)}")
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
             time.sleep(0.5)
@@ -272,7 +281,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             self.place_attempted = True
         if base_action is not None:
             if nav_silence_only:
-                base_action = rescale_actions(base_action)
+                base_action = rescale_actions(base_action, silence_only=True)
             else:
                 base_action = np.clip(base_action, -1, 1)
             if np.count_nonzero(base_action) > 0:
@@ -329,9 +338,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if self.prev_base_moved and base_action is None:
             self.spot.stand()
 
-        base_action_str = "None" if base_action is None else arr2str(base_action)
-        arm_action_str = "None" if arm_action is None else arr2str(arm_action)
-        print(f"base_action: {base_action_str}\tarm_action: {arm_action_str}")
+        print(f"base_action: {arr2str(base_action)}\tarm_action: {arr2str(arm_action)}")
 
         # Spin until enough time has passed during this step
         start_time = time.time()
@@ -355,7 +362,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.stopwatch.record("get_observations")
 
         self.num_steps += 1
-        timeout = self.num_steps == self.max_episode_steps
+        timeout = self.num_steps >= self.max_episode_steps
         done = timeout or self.get_success(observations) or self.should_end
         self.ctrl_hz = self.config.CTRL_HZ  # revert ctrl_hz in case it slowed down
 
@@ -439,17 +446,10 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         return joints
 
-    def get_gripper_images(
-        self,
-        left_crop=124,
-        right_crop=60,
-        new_width=228,
-        new_height=240,
-        save_image=False,
-    ):
+    def get_gripper_images(self, save_image=False):
         if self.grasp_attempted:
             # Return blank images if the gripper is being blocked
-            blank_img = np.zeros([new_height, new_width, 1], dtype=np.float32)
+            blank_img = np.zeros([NEW_HEIGHT, NEW_WIDTH, 1], dtype=np.float32)
             return blank_img, blank_img.copy()
         if self.parallel_inference_mode:
             self.detection_timestamp = None
@@ -472,46 +472,37 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             arm_depth = self.msg_to_cv2(self.filtered_hand_depth, "mono8")
 
         # Crop out black vertical bars on the left and right edges of aligned depth img
-        arm_depth = arm_depth[:, left_crop:-right_crop]
-        orig_height, orig_width = arm_depth.shape[:2]
+        arm_depth = arm_depth[:, LEFT_CROP:-RIGHT_CROP]
         arm_depth = cv2.resize(
-            arm_depth, (new_width, new_height), interpolation=cv2.INTER_AREA
+            arm_depth, (NEW_WIDTH, NEW_HEIGHT), interpolation=cv2.INTER_AREA
         )
         arm_depth = arm_depth.reshape([*arm_depth.shape, 1])  # unsqueeze
         arm_depth = np.float32(arm_depth) / 255.0
 
         # Generate object mask channel
         if self.use_mrcnn:
-            obj_bbox = self.update_gripper_detections(save_image)
+            obj_bbox = self.update_gripper_detections(arm_depth, save_image)
         else:
             obj_bbox = None
-        arm_depth_bbox = np.zeros_like(arm_depth, dtype=np.float32)
-        if obj_bbox is not None:
-            x1, y1, x2, y2 = obj_bbox
-            width_scale = float(new_width) / float(orig_width)
-            height_scale = float(new_height) / float(orig_height)
-            x1 = max(int(float(x1 - left_crop) * width_scale), 0)
-            x2 = max(int(float(x2 - left_crop) * width_scale), 0)
-            y1 = int(float(y1) * height_scale)
-            y2 = int(float(y2) * height_scale)
-            arm_depth_bbox[y1:y2, x1:x2] = 1.0
 
-            # Estimate distance from the gripper to the object
-            depth_box = arm_depth[y1:y2, x1:x2]
-            self.target_object_distance = np.median(depth_box) * MAX_HAND_DEPTH
+        if obj_bbox is not None:
+            self.target_object_distance, arm_depth_bbox = get_obj_dist_and_bbox(
+                obj_bbox, arm_depth
+            )
         else:
             self.target_object_distance = -1
+            arm_depth_bbox = np.zeros_like(arm_depth, dtype=np.float32)
 
         return arm_depth, arm_depth_bbox
 
-    def update_gripper_detections(self, save_image=False):
-        det = self.get_mrcnn_det(save_image=save_image)
+    def update_gripper_detections(self, arm_depth, save_image=False):
+        det = self.get_mrcnn_det(arm_depth, save_image=save_image)
         if det is None:
             self.curr_forget_steps += 1
             self.locked_on_object_count = 0
         return det
 
-    def get_mrcnn_det(self, save_image=False):
+    def get_mrcnn_det(self, arm_depth, save_image=False):
         marked_img = None
         if self.parallel_inference_mode:
             detections_str = str(self.detections_str_synced)
@@ -546,7 +537,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 for det in detections_str.split(";"):
                     class_id, score = det.split(",")[:2]
                     class_id, score = int(class_id), float(score)
-                    if score > 0.8:
+                    dist = get_obj_dist_and_bbox(self.get_det_bbox(det), arm_depth)[0]
+                    if score > 0.8 and dist < MAX_HAND_DEPTH:
                         good_detections.append(object_id_to_object_name(class_id))
                         if score > most_confident_score:
                             most_confident_score = score
@@ -583,11 +575,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         def get_score(detection):
             return float(detection.split(",")[1])
 
-        img_scale_factor = self.config.IMAGE_SCALE
         best_detection = sorted(matching_detections, key=get_score)[-1]
-        x1, y1, x2, y2 = [
-            int(float(i) / img_scale_factor) for i in best_detection.split(",")[-4:]
-        ]
+        x1, y1, x2, y2 = self.get_det_bbox(best_detection)
 
         # Create bbox mask from selected detection
         cx = int(np.mean([x1, x2]))
@@ -627,6 +616,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         return x1, y1, x2, y2
 
+    def get_det_bbox(self, det):
+        img_scale_factor = self.config.IMAGE_SCALE
+        x1, y1, x2, y2 = [int(float(i) / img_scale_factor) for i in det.split(",")[-4:]]
+        return x1, y1, x2, y2
+
     @staticmethod
     def locked_on_object(x1, y1, x2, y2, height, width, radius=0.1):
         cy, cx = height // 2, width // 2
@@ -643,6 +637,21 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         locked_on = bbox_dist < pixel_radius
 
         return locked_on
+
+    def should_grasp(self):
+        grasp = False
+        if self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED:
+            if self.target_object_distance < 0.85:
+                if self.config.ASSERT_CENTERING:
+                    x, y = self.obj_center_pixel
+                    if abs(x / 640 - 0.5) < 0.25 or abs(y / 480 - 0.5) < 0.25:
+                        grasp = True
+                    else:
+                        print("Too off center to grasp!:", x / 640, y / 480)
+            else:
+                print(f"Too far to grasp ({self.target_object_distance})!")
+
+        return grasp
 
     def get_observations(self):
         raise NotImplementedError
@@ -776,6 +785,21 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         except:
             print("Undocking failed: just standing up instead...")
             self.spot.blocking_stand()
+
+
+def get_obj_dist_and_bbox(obj_bbox, arm_depth):
+    x1, y1, x2, y2 = obj_bbox
+    x1 = max(int(float(x1 - LEFT_CROP) * WIDTH_SCALE), 0)
+    x2 = max(int(float(x2 - LEFT_CROP) * WIDTH_SCALE), 0)
+    y1 = int(float(y1) * HEIGHT_SCALE)
+    y2 = int(float(y2) * HEIGHT_SCALE)
+    arm_depth_bbox = np.zeros_like(arm_depth, dtype=np.float32)
+    arm_depth_bbox[y1:y2, x1:x2] = 1.0
+
+    # Estimate distance from the gripper to the object
+    depth_box = arm_depth[y1:y2, x1:x2]
+
+    return np.median(depth_box) * MAX_HAND_DEPTH, arm_depth_bbox
 
 
 def angle_between(v1, v2):
