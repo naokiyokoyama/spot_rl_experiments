@@ -295,11 +295,13 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     def __init__(self, config, spot: Spot):
         super().__init__(config, spot)
         self.current_task = Tasks.NAV
+        self.timeout_start = float("inf")
 
     def reset(self, *args, **kwargs):
         observations = super().reset(*args, **kwargs)
         self.current_task = Tasks.NAV
         self.target_obj_name = 0
+        self.timeout_start = float("inf")
 
         return observations
 
@@ -316,10 +318,12 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
         ):
             if not self.grasp_attempted:
                 self.current_task = Tasks.GAZE
+                self.timeout_start = time.time()
                 self.target_obj_name = None
             else:
                 self.current_task = Tasks.PLACE
                 self.say("Starting place")
+                self.timeout_start = time.time()
 
         if not pre_step_navigating_to_place and self.navigating_to_place:
             # This means that the Gaze task has just ended
@@ -328,6 +332,9 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
         info["correct_skill"] = self.current_task
 
         self.use_mrcnn = self.current_task == Tasks.GAZE
+
+        if time.time() > self.timeout_start + 15:
+            done = True
 
         return observations, reward, done, info
 
