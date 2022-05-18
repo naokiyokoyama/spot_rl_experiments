@@ -13,12 +13,16 @@ names = ["ball", "penguin", "rubiks_cube", "lion", "toy_car", "yellow_truck"]
 def main(spot, bd=False):
     config = construct_config()
     config.DONT_PICK_UP = True
-    config.FORGET_TARGET_OBJECT_STEPS = 100
-    config.CTRL_HZ = 1.75
+    config.OBJECT_LOCK_ON_NEEDED = 5
+    # config.CTRL_HZ = 2.0
     config.TERMINATE_ON_GRASP = True
+    config.FORGET_TARGET_OBJECT_STEPS = 1000000
     if bd:
         config.GRASP_EVERY_STEP = True
         config.MAX_JOINT_MOVEMENT = 0.0  # freeze arm
+        config.MAX_EPISODE_STEPS = 20
+    else:
+        config.MAX_EPISODE_STEPS = 150
     orig_pos = None
     for _ in range(3):
         for name in names:

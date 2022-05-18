@@ -113,6 +113,11 @@ def main(spot, use_mixer, config, out_path=None):
 
             env.stopwatch.print_stats(latest=True)
 
+        # Ensure gripper is open (place may have timed out)
+        if not env.place_attempted:
+            env.spot.open_gripper()
+            time.sleep(2)
+
     out_data.append((time.time(), env.x, env.y, env.yaw))
 
     if out_path is not None:
@@ -224,21 +229,10 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
     def step(self, base_action, arm_action, *args, **kwargs):
         _, xy_dist, z_dist = self.get_place_distance()
         place = xy_dist < self.config.SUCC_XY_DIST and z_dist < self.config.SUCC_Z_DIST
-        grasp = (
-            self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED
-            and not self.grasp_attempted
-            and 0.2 < self.target_object_distance < 1.0
-        )
-        if grasp and self.config.ASSERT_CENTERING:
-            x, y = self.obj_center_pixel
-            if abs(x / 640 - 0.5) > 0.5 or abs(y / 480 - 0.5) > 0.5:
-                grasp = False
-        if (
-            not grasp
-            and not self.grasp_attempted
-            and self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED
-        ):
-            print(f"Can't grasp: object is {self.target_object_distance} m far")
+        if self.grasp_attempted:
+            grasp = False
+        else:
+            grasp = self.should_grasp()
 
         if self.grasp_attempted:
             max_joint_movement_key = "MAX_JOINT_MOVEMENT_2"
@@ -285,7 +279,7 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         self.rho = rho
         goal_heading = observations["goal_heading"][0]
         self.heading_err = goal_heading
-        self.use_mrcnn = rho < 1.5 and abs(goal_heading) < np.deg2rad(45)
+        self.use_mrcnn = True
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
 
@@ -312,6 +306,10 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     def step(self, *args, **kwargs):
         pre_step_navigating_to_place = self.navigating_to_place
         observations, reward, done, info = super().step(*args, **kwargs)
+
+        if self.current_task != Tasks.GAZE:
+            # Disable target searching if we are not gazing
+            self.last_seen_objs = []
 
         if self.current_task == Tasks.NAV and self.get_nav_success(
             observations, self.succ_distance, self.succ_angle
