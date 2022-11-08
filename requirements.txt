@@ -1,4 +1,4 @@
-ruamel.yaml
+yacs
 blosc
 numpy
 cv2
