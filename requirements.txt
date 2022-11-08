@@ -1,5 +1,5 @@
 yacs
 blosc
 numpy
-cv2
+opencv-python
 gym
