@@ -91,6 +91,8 @@ def get_clutter_amounts():
 
 
 def arr2str(arr):
+    if arr is None:
+        return "None"
     return f"[{', '.join([f'{i:.2f}' for i in arr])}]"
 
 
