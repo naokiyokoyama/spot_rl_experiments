@@ -55,7 +55,6 @@ def main(spot, use_mixer, config, out_path=None):
     out_data = []
     for trip_idx in range(NUM_OBJECTS + 1):
         if trip_idx < NUM_OBJECTS:
-            # 2 objects per receptacle
             clutter_blacklist = [
                 i for i in WAYPOINTS["clutter"] if count[i] >= CLUTTER_AMOUNTS[i]
             ]
@@ -295,6 +294,7 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
     def __init__(self, config, spot: Spot):
         super().__init__(config, spot)
         self.current_task = Tasks.NAV
+        self.prev_task = None
         self.timeout_start = float("inf")
 
     def reset(self, *args, **kwargs):
@@ -318,12 +318,10 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
         ):
             if not self.grasp_attempted:
                 self.current_task = Tasks.GAZE
-                self.timeout_start = time.time()
                 self.target_obj_name = None
             else:
                 self.current_task = Tasks.PLACE
                 self.say("Starting place")
-                self.timeout_start = time.time()
 
         if not pre_step_navigating_to_place and self.navigating_to_place:
             # This means that the Gaze task has just ended
@@ -333,8 +331,13 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
 
         self.use_mrcnn = self.current_task == Tasks.GAZE
 
-        if time.time() > self.timeout_start + 15:
+        if self.current_task != self.prev_task:
+            self.timeout_start = time.time()
+
+        if time.time() > self.timeout_start + 15 and self.current_task != Tasks.NAV:
             done = True
+
+        self.prev_task = self.current_task
 
         return observations, reward, done, info
 
