@@ -128,6 +128,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.slowdown_base = -1
         self.prev_base_moved = False
         self.should_end = False
+        self.specific_target_object = None
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -211,6 +212,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.slowdown_base = -1
         self.prev_base_moved = False
         self.should_end = False
+        self.specific_target_object = None
 
         observations = self.get_observations()
         return observations
@@ -523,39 +525,49 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if self.curr_forget_steps >= self.forget_target_object_steps:
             self.target_obj_name = None
 
-        if detections_str != "None":
+        if detections_str == "None":
+            return None  # there were no detections at all, exit early
+        else:
             detected_classes = [
                 object_id_to_object_name(int(i.split(",")[0]))
                 for i in detections_str.split(";")
             ]
             print("[mask_rcnn]: Detected:", ", ".join(detected_classes))
 
-            if self.target_obj_name is None:
-                most_confident_class_id = None
-                most_confident_score = 0.0
-                good_detections = []
-                for det in detections_str.split(";"):
-                    class_id, score = det.split(",")[:2]
-                    class_id, score = int(class_id), float(score)
-                    dist = get_obj_dist_and_bbox(self.get_det_bbox(det), arm_depth)[0]
-                    if score > 0.8 and dist < MAX_HAND_DEPTH:
-                        good_detections.append(object_id_to_object_name(class_id))
-                        if score > most_confident_score:
-                            most_confident_score = score
-                            most_confident_class_id = class_id
-                if most_confident_score == 0.0:
-                    return None
-                most_confident_name = object_id_to_object_name(most_confident_class_id)
-                if most_confident_name in self.last_seen_objs:
-                    self.target_obj_name = most_confident_name
-                    if self.target_obj_name != self.last_target_obj:
-                        self.say("Now targeting " + self.target_obj_name)
-                    self.last_target_obj = self.target_obj_name
-                self.last_seen_objs = good_detections
+            if self.specific_target_object is not None:
+                # If we're looking for a specific object, focus on only that
+                self.target_obj_name = self.specific_target_object
             else:
-                self.last_seen_objs = []
-        else:
-            return None
+                if self.target_obj_name is None:
+                    most_confident_class_id = None
+                    most_confident_score = 0.0
+                    good_detections = []
+                    for d in detections_str.split(";"):
+                        class_id, score = d.split(",")[:2]
+                        class_id, score = int(class_id), float(score)
+                        dist = get_obj_dist_and_bbox(self.get_det_bbox(d), arm_depth)[0]
+                        if score > 0.8 and dist < MAX_HAND_DEPTH:
+                            good_detections.append(object_id_to_object_name(class_id))
+                            if score > most_confident_score:
+                                most_confident_score = score
+                                most_confident_class_id = class_id
+                    if len(good_detections) == 0:
+                        return None  # no detections within distance range, exit early
+                    most_confident_name = object_id_to_object_name(
+                        most_confident_class_id
+                    )
+                    if most_confident_name in self.last_seen_objs:
+                        self.target_obj_name = most_confident_name
+                        if self.target_obj_name != self.last_target_obj:
+                            # Only state target object if it's now different
+                            self.say("Now targeting " + self.target_obj_name)
+                        self.last_target_obj = self.target_obj_name
+                    else:
+                        return None  # not sure what to target yet, exit early
+                    self.last_seen_objs = good_detections
+                else:
+                    # If we have a target, focus on it; don't track other objects yet
+                    self.last_seen_objs = []
 
         # Check if desired object is in view of camera
         targ_obj_name = self.target_obj_name

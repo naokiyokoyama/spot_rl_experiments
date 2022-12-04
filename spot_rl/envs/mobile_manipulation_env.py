@@ -21,9 +21,6 @@ from spot_rl.utils.utils import (
     place_target_from_waypoints,
 )
 
-CLUTTER_AMOUNTS = Counter()
-CLUTTER_AMOUNTS.update(get_clutter_amounts())
-NUM_OBJECTS = np.sum(list(CLUTTER_AMOUNTS.values()))
 DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 
 DEBUGGING = False
@@ -53,10 +50,19 @@ def main(spot, use_mixer, config, out_path=None):
     time.sleep(1)
     count = Counter()
     out_data = []
-    for trip_idx in range(NUM_OBJECTS + 1):
-        if trip_idx < NUM_OBJECTS:
+
+    # Determine the number of episodes to run
+    clutter_amounts = Counter()
+    clutter_amounts.update(get_clutter_amounts())
+    num_objects = np.sum(list(clutter_amounts.values()))
+
+    # Set a priority list for the objects to find if clutter_objects is non-empty
+    clutter_objects = WAYPOINTS.get("clutter_objects", []).copy()
+
+    for trip_idx in range(num_objects + 1):
+        if trip_idx < num_objects:
             clutter_blacklist = [
-                i for i in WAYPOINTS["clutter"] if count[i] >= CLUTTER_AMOUNTS[i]
+                i for i in WAYPOINTS["clutter"] if count[i] >= clutter_amounts[i]
             ]
             waypoint_name, waypoint = closest_clutter(
                 env.x, env.y, clutter_blacklist=clutter_blacklist
@@ -67,6 +73,8 @@ def main(spot, use_mixer, config, out_path=None):
             env.say("Finished object rearrangement. Heading to dock.")
             waypoint = nav_target_from_waypoints("dock")
         observations = env.reset(waypoint=waypoint)
+        if len(clutter_objects) > 0:
+            env.specific_target_object = clutter_objects.pop(0)
         policy.reset()
         done = False
         if use_mixer:
@@ -96,7 +104,7 @@ def main(spot, use_mixer, config, out_path=None):
             if not use_mixer:
                 expert = info["correct_skill"]
 
-            if trip_idx >= NUM_OBJECTS and env.get_nav_success(
+            if trip_idx >= num_objects and env.get_nav_success(
                 observations, 0.3, np.deg2rad(10)
             ):
                 # The robot has arrived back at the dock
