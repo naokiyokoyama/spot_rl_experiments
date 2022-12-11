@@ -245,7 +245,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         print(f"raw_base_ac: {arr2str(base_action)}\traw_arm_ac: {arr2str(arm_action)}")
         if grasp:
             # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(0.5)
+            time.sleep(0.9)
             self.get_gripper_images(save_image=True)
 
             if self.curr_forget_steps == 0:
@@ -379,8 +379,16 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         ret = self.spot.grasp_hand_depth(
             self.obj_center_pixel, top_down_grasp=True, timeout=10
         )
-        if self.config.USE_REMOTE_SPOT:
-            ret = time.time() - pre_grasp > 3  # TODO: Make this better...
+        if self.config.USE_REMOTE_SPOT and not time.time() - pre_grasp > 3:
+            return False
+
+        time.sleep(1)
+        finger_angle = self.spot.get_proprioception()["arm0.f1x"].position.value
+        if np.rad2deg(finger_angle) > -1.0:
+            # Grasped on to nothing
+            self.spot.open_gripper()
+            return False
+
         return ret
 
     @staticmethod
