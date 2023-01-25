@@ -129,6 +129,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.prev_base_moved = False
         self.should_end = False
         self.specific_target_object = None
+        self.last_seen_target = -1
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -213,6 +214,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.prev_base_moved = False
         self.should_end = False
         self.specific_target_object = None
+        self.last_seen_target = -1
 
         observations = self.get_observations()
         return observations
@@ -274,6 +276,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                 time.sleep(1.0)
                 if self.config.TERMINATE_ON_GRASP:
                     self.should_end = True
+                self.last_seen_target = -1
         elif place:
             print("PLACE ACTION CALLED: Opening the gripper!")
             if self.get_grasp_angle_to_xy() < np.deg2rad(30):
@@ -281,6 +284,10 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             self.spot.open_gripper()
             time.sleep(0.3)
             self.place_attempted = True
+            # Revert joint positions after place
+            self.spot.set_arm_joint_positions(
+                positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
+            )
         if base_action is not None:
             if nav_silence_only:
                 base_action = rescale_actions(base_action, silence_only=True)
@@ -513,6 +520,12 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         return det
 
     def get_mrcnn_det(self, arm_depth, save_image=False):
+        if self.last_seen_target != -1 and time.time() - self.last_seen_target > 10:
+            self.last_seen_target = -1
+            self.spot.set_arm_joint_positions(
+                positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
+            )
+
         marked_img = None
         if self.parallel_inference_mode:
             detections_str = str(self.detections_str_synced)
@@ -590,6 +603,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             return None
 
         self.curr_forget_steps = 0
+        self.last_seen_target = time.time()
 
         # Get object match with the highest score
         def get_score(detection):
