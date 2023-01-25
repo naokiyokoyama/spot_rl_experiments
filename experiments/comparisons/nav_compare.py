@@ -4,7 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 from spot_wrapper.spot import Spot, wrap_heading
-from spot_wrapper.utils import say
+from spot_wrapper.utils.utils import say
 
 from spot_rl.envs.nav_env import SpotNavEnv
 from spot_rl.real_policy import NavPolicy

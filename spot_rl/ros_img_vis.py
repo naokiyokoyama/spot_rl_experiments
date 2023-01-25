@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import rospy
 import tqdm
-from spot_wrapper.utils import resize_to_tallest
+from spot_wrapper.utils.utils import resize_to_tallest
 
 from spot_rl.utils.robot_subscriber import SpotRobotSubscriberMixin
 from spot_rl.utils.utils import ros_topics as rt

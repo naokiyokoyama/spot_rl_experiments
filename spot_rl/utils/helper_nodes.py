@@ -4,7 +4,7 @@ import time
 import numpy as np
 import rospy
 from spot_wrapper.spot import Spot
-from spot_wrapper.utils import say
+from spot_wrapper.utils.utils import say
 from std_msgs.msg import Float32MultiArray, String
 
 from spot_rl.utils.utils import ros_topics as rt
