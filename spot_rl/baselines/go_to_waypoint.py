@@ -33,31 +33,28 @@ def main(spot):
 
     spot.power_on()
     spot.blocking_stand()
-    try:
-        cmd_id = spot.set_base_position(
-            x_pos=goal_x,
-            y_pos=goal_y,
-            yaw=goal_heading + np.pi,
-            end_time=100,
-            **kwargs,
-        )
-        cmd_status = None
-        while cmd_status != 1:
-            time.sleep(0.1)
-            feedback_resp = spot.get_cmd_feedback(cmd_id)
-            cmd_status = (
-                feedback_resp.feedback.synchronized_feedback.mobility_command_feedback
-            ).se2_trajectory_feedback.status
-        if args.dock:
-            dock_start_time = time.time()
-            while time.time() - dock_start_time < 2:
-                try:
-                    spot.dock(dock_id=DOCK_ID, home_robot=True)
-                except:
-                    print("Dock not found... trying again")
-                    time.sleep(0.1)
-    finally:
-        spot.power_off()
+    cmd_id = spot.set_base_position(
+        x_pos=goal_x,
+        y_pos=goal_y,
+        yaw=-goal_heading,
+        end_time=100,
+        **kwargs,
+    )
+    cmd_status = None
+    while cmd_status != 1:
+        time.sleep(0.1)
+        feedback_resp = spot.get_cmd_feedback(cmd_id)
+        cmd_status = (
+            feedback_resp.feedback.synchronized_feedback.mobility_command_feedback
+        ).se2_trajectory_feedback.status
+    if args.dock:
+        dock_start_time = time.time()
+        while time.time() - dock_start_time < 2:
+            try:
+                spot.dock(dock_id=DOCK_ID, home_robot=True)
+            except:
+                print("Dock not found... trying again")
+                time.sleep(0.1)
 
 
 if __name__ == "__main__":
