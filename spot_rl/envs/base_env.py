@@ -4,7 +4,6 @@ import time
 
 import cv2
 import gym
-
 from spot_rl.utils.img_publishers import MAX_HAND_DEPTH
 from spot_rl.utils.mask_rcnn_utils import (
     generate_mrcnn_detections,
@@ -31,11 +30,10 @@ except:
     pass
 
 from sensor_msgs.msg import Image
-from spot_wrapper.spot import Spot, wrap_heading
-from std_msgs.msg import Float32, String
-
 from spot_rl.utils.utils import FixSizeOrderedDict, arr2str, object_id_to_object_name
 from spot_rl.utils.utils import ros_topics as rt
+from spot_wrapper.spot import Spot, wrap_heading
+from std_msgs.msg import Float32, String
 
 MAX_CMD_DURATION = 5
 GRASP_VIS_DIR = osp.join(
@@ -125,11 +123,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.latest_synchro_obj_detection = None
         self.mrcnn_viz = None
         self.last_seen_objs = []
-        self.slowdown_base = -1
+        self.pause_after_action = -1
         self.prev_base_moved = False
         self.should_end = False
         self.specific_target_object = None
-        self.last_seen_target = -1
+        self.last_target_sighting = -1
 
         # Text-to-speech
         self.tts_pub = rospy.Publisher(rt.TEXT_TO_SPEECH, String, queue_size=1)
@@ -210,14 +208,133 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.obj_center_pixel = None
         self.place_attempted = False
         self.detection_timestamp = -1
-        self.slowdown_base = -1
+        self.pause_after_action = -1
         self.prev_base_moved = False
         self.should_end = False
         self.specific_target_object = None
-        self.last_seen_target = -1
+        self.last_target_sighting = -1
 
         observations = self.get_observations()
         return observations
+
+    def grasp(self):
+        # Briefly pause and get latest gripper image to ensure precise grasp
+        time.sleep(0.9)
+        self.get_gripper_images(save_image=True)
+
+        if self.curr_forget_steps == 0:
+            print(f"GRASP CALLED: Aiming at (x, y): {self.obj_center_pixel}!")
+            self.say("Grasping " + self.target_obj_name)
+
+            # The following cmd is blocking
+            success = self.attempt_grasp()
+            if success:
+                # Just leave the object on the receptacle if desired
+                if self.config.DONT_PICK_UP:
+                    self.spot.open_gripper()
+                self.grasp_attempted = True
+                arm_positions = np.deg2rad(self.config.PLACE_ARM_JOINT_ANGLES)
+            else:
+                self.say("BD grasp API failed.")
+                self.locked_on_object_count = 0
+                arm_positions = np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES)
+
+            # Revert joint positions after grasp
+            self.spot.set_arm_joint_positions(positions=arm_positions, travel_time=1.0)
+            # Wait for arm to return to position
+            time.sleep(1)
+            self.last_target_sighting = -1
+            if self.config.TERMINATE_ON_GRASP:
+                self.should_end = True
+
+    def place(self):
+        print("PLACE ACTION CALLED: Opening the gripper!")
+        self.turn_wrist()
+        self.spot.open_gripper()
+        time.sleep(0.3)
+        self.place_attempted = True
+        # Revert joint positions after place
+        self.spot.set_arm_joint_positions(
+            positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
+        )
+
+    def process_base_action(self, base_action, nav_silence_only):
+        base_action = rescale_actions(base_action, silence_only=nav_silence_only)
+        if np.count_nonzero(base_action) > 0:
+            # Command velocities using the input action
+            lin_dist, ang_dist = base_action
+            lin_dist *= self.max_lin_dist
+            ang_dist *= self.max_ang_dist
+            # No horizontal velocity
+            ctrl_period = 1 / self.ctrl_hz
+            # Don't even bother moving if it's just for a bit of distance
+            if abs(lin_dist) < 0.05 and abs(ang_dist) < np.deg2rad(3):
+                base_action = None
+            else:
+                base_action = np.array(
+                    [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
+                )
+        else:
+            base_action = None
+
+        return base_action
+
+    def process_arm_action(self, arm_action, max_joint_movement_key):
+        arm_action = rescale_actions(arm_action)
+        if np.count_nonzero(arm_action) > 0:
+            arm_action *= self.config[max_joint_movement_key]
+            arm_action = self.current_arm_pose + pad_action(arm_action)
+            arm_action = np.clip(
+                arm_action, self.arm_lower_limits, self.arm_upper_limits
+            )
+        else:
+            arm_action = None
+        return arm_action
+
+    def execute_base_arm_action(self, base_action, arm_action, disable_oa):
+        if base_action is not None and arm_action is not None:
+            self.spot.set_base_vel_and_arm_pos(
+                *base_action,
+                arm_action,
+                MAX_CMD_DURATION,
+                disable_obstacle_avoidance=disable_oa,
+            )
+        elif base_action is not None:
+            self.spot.set_base_velocity(
+                *base_action,
+                MAX_CMD_DURATION,
+                disable_obstacle_avoidance=disable_oa,
+            )
+        elif arm_action is not None:
+            self.spot.set_arm_joint_positions(
+                positions=arm_action, travel_time=1 / self.ctrl_hz * 0.9
+            )
+
+    def block_until_done(self, base_action, arm_action, disable_oa):
+        if base_action is None and arm_action is None:
+            return
+        # Keep executing the base action until the commanded angular displacement has
+        # been reached, or until a timeout
+        start_time = time.time()
+        if base_action is not None:
+            target_yaw = wrap_heading(self.yaw + base_action[2] * (1 / self.ctrl_hz))
+            timeout = 1 / self.ctrl_hz * 1.5
+            goal_met = False
+            while time.time() > start_time + timeout:
+                if abs(wrap_heading(self.yaw - target_yaw)) < np.deg2rad(3):
+                    lin_only = [base_action[0], 0, 0]
+                    self.spot.set_base_velocity(
+                        *lin_only,
+                        MAX_CMD_DURATION,
+                        disable_obstacle_avoidance=disable_oa,
+                    )
+                    goal_met = True
+                    break
+                time.sleep(0.05)
+            if not goal_met:
+                print(f"!!!! TIMEOUT REACHED: cmd angular displacement unmet!!!!")
+        while time.time() < start_time + 1 / self.ctrl_hz:
+            pass
 
     def step(
         self,
@@ -237,143 +354,59 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         :param place: whether to call the open_gripper() method
         :param max_joint_movement_key: max allowable displacement of arm joints
             (different for gaze and place)
+        :param nav_silence_only: whether small base actions will not be remapped after
+            low values are silenced; the corrective actions need this to be False
+        :param disable_oa: whether obstacle avoidance will be disabled
         :return: observations, reward (None), done, info
         """
         assert self.reset_ran, ".reset() must be called first!"
-        target_yaw = None
+        assert not (grasp and place), "Can't grasp and place at the same time!"
+        print(f"raw_base_ac: {arr2str(base_action)}\traw_arm_ac: {arr2str(arm_action)}")
+
         if disable_oa is None:
             disable_oa = self.config.DISABLE_OBSTACLE_AVOIDANCE
         grasp = grasp or self.config.GRASP_EVERY_STEP
-        print(f"raw_base_ac: {arr2str(base_action)}\traw_arm_ac: {arr2str(arm_action)}")
-        if grasp:
-            # Briefly pause and get latest gripper image to ensure precise grasp
-            time.sleep(0.9)
-            self.get_gripper_images(save_image=True)
-
-            if self.curr_forget_steps == 0:
-                print(f"GRASP CALLED: Aiming at (x, y): {self.obj_center_pixel}!")
-                self.say("Grasping " + self.target_obj_name)
-
-                # The following cmd is blocking
-                success = self.attempt_grasp()
-                if success:
-                    # Just leave the object on the receptacle if desired
-                    if self.config.DONT_PICK_UP:
-                        self.spot.open_gripper()
-                    self.grasp_attempted = True
-                    arm_positions = np.deg2rad(self.config.PLACE_ARM_JOINT_ANGLES)
-                else:
-                    self.say("BD grasp API failed.")
-                    self.locked_on_object_count = 0
-                    arm_positions = np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES)
-                    time.sleep(2)
-
-                # Revert joint positions after grasp
-                self.spot.set_arm_joint_positions(
-                    positions=arm_positions, travel_time=1.0
-                )
-                # Wait for arm to return to position
-                time.sleep(1.0)
-                if self.config.TERMINATE_ON_GRASP:
-                    self.should_end = True
-                self.last_seen_target = -1
-        elif place:
-            print("PLACE ACTION CALLED: Opening the gripper!")
-            if self.get_grasp_angle_to_xy() < np.deg2rad(30):
-                self.turn_wrist()
-            self.spot.open_gripper()
-            time.sleep(0.3)
-            self.place_attempted = True
-            # Revert joint positions after place
-            self.spot.set_arm_joint_positions(
-                positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
-            )
-        if base_action is not None:
-            if nav_silence_only:
-                base_action = rescale_actions(base_action, silence_only=True)
+        if grasp or place:
+            base_action, arm_action = None, None
+            if grasp:
+                self.grasp()
             else:
-                base_action = np.clip(base_action, -1, 1)
-            if np.count_nonzero(base_action) > 0:
-                # Command velocities using the input action
-                lin_dist, ang_dist = base_action
-                lin_dist *= self.max_lin_dist
-                ang_dist *= self.max_ang_dist
-                target_yaw = wrap_heading(self.yaw + ang_dist)
-                # No horizontal velocity
-                ctrl_period = 1 / self.ctrl_hz
-                # Don't even bother moving if it's just for a bit of distance
-                if abs(lin_dist) < 0.05 and abs(ang_dist) < np.deg2rad(3):
-                    base_action = None
-                    target_yaw = None
-                else:
-                    base_action = [lin_dist / ctrl_period, 0, ang_dist / ctrl_period]
-                    self.prev_base_moved = True
-            else:
-                base_action = None
-                self.prev_base_moved = False
-        if arm_action is not None:
-            arm_action = rescale_actions(arm_action)
-            if np.count_nonzero(arm_action) > 0:
-                arm_action *= self.config[max_joint_movement_key]
-                arm_action = self.current_arm_pose + pad_action(arm_action)
-                arm_action = np.clip(
-                    arm_action, self.arm_lower_limits, self.arm_upper_limits
-                )
-            else:
-                arm_action = None
+                self.place()
+        else:
+            if base_action is not None:
+                base_action = self.process_base_action(base_action, nav_silence_only)
+            if arm_action is not None:
+                arm_action = self.process_arm_action(arm_action, max_joint_movement_key)
 
-        if not (grasp or place):
-            if self.slowdown_base > -1 and base_action is not None:
-                self.ctrl_hz = self.slowdown_base
-                base_action = np.array(base_action) * self.slowdown_base / self.ctrl_hz
-            if base_action is not None and arm_action is not None:
-                self.spot.set_base_vel_and_arm_pos(
-                    *base_action,
-                    arm_action,
-                    MAX_CMD_DURATION,
-                    disable_obstacle_avoidance=disable_oa,
-                )
-            elif base_action is not None:
-                self.spot.set_base_velocity(
-                    *base_action,
-                    MAX_CMD_DURATION,
-                    disable_obstacle_avoidance=disable_oa,
-                )
-            elif arm_action is not None:
-                self.spot.set_arm_joint_positions(
-                    positions=arm_action, travel_time=1 / self.ctrl_hz * 0.9
-                )
+            self.execute_base_arm_action(base_action, arm_action, disable_oa)
 
         if self.prev_base_moved and base_action is None:
+            # If we moved in the previous step, but not this one, make it stand still
+            self.spot.set_base_velocity(0, 0, 0, MAX_CMD_DURATION)
             self.spot.stand()
+        self.prev_base_moved = base_action is not None
 
         print(f"base_action: {arr2str(base_action)}\tarm_action: {arr2str(arm_action)}")
 
-        # Spin until enough time has passed during this step
-        start_time = time.time()
-        if base_action is not None or arm_action is not None:
-            while time.time() < start_time + 1 / self.ctrl_hz:
-                if target_yaw is not None and abs(
-                    wrap_heading(self.yaw - target_yaw)
-                ) < np.deg2rad(3):
-                    # Prevent overshooting of angular velocity
-                    self.spot.set_base_velocity(base_action[0], 0, 0, MAX_CMD_DURATION)
-                    target_yaw = None
-        elif not (grasp or place):
+        if not (grasp or place) and base_action is None and arm_action is None:
             print("!!!! NO ACTIONS CALLED: moving to next step !!!!")
             self.num_steps -= 1
+        else:
+            self.block_until_done(base_action, arm_action, disable_oa)
 
         self.stopwatch.record("run_actions")
         if base_action is not None:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
 
+        if self.pause_after_action > 0:
+            time.sleep(self.pause_after_action)
+
         observations = self.get_observations()
         self.stopwatch.record("get_observations")
 
         self.num_steps += 1
-        timeout = self.num_steps >= self.max_episode_steps
-        done = timeout or self.get_success(observations) or self.should_end
-        self.ctrl_hz = self.config.CTRL_HZ  # revert ctrl_hz in case it slowed down
+        limit_reached = self.num_steps >= self.max_episode_steps
+        done = limit_reached or self.get_success(observations) or self.should_end
 
         # Don't need reward or info
         reward = None
@@ -520,8 +553,10 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         return det
 
     def get_mrcnn_det(self, arm_depth, save_image=False):
-        if self.last_seen_target != -1 and time.time() - self.last_seen_target > 10:
-            self.last_seen_target = -1
+        if (
+            self.last_target_sighting != -1
+            and time.time() - self.last_target_sighting > 3
+        ):
             self.spot.set_arm_joint_positions(
                 positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
             )
@@ -603,7 +638,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             return None
 
         self.curr_forget_steps = 0
-        self.last_seen_target = time.time()
+        self.last_target_sighting = time.time()
 
         # Get object match with the highest score
         def get_score(detection):

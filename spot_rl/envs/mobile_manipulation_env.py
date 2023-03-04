@@ -104,11 +104,12 @@ def main(spot, use_mixer, config, out_path=None):
             if not use_mixer:
                 expert = info["correct_skill"]
 
-            if trip_idx >= num_objects and env.get_nav_success(
-                observations, 0.3, np.deg2rad(10)
-            ):
-                # The robot has arrived back at the dock
-                break
+            if trip_idx >= num_objects:
+                try:
+                    spot.dock(dock_id=DOCK_ID, home_robot=True)
+                    break
+                except:
+                    pass
 
             # Print info
             # stats = [f"{k}: {v}" for k, v in info.items()]
@@ -134,15 +135,6 @@ def main(spot, use_mixer, config, out_path=None):
         )
         with open(out_path, "w") as f:
             f.write(data)
-
-    env.say("Executing automatic docking")
-    dock_start_time = time.time()
-    while time.time() - dock_start_time < 2:
-        try:
-            spot.dock(dock_id=DOCK_ID, home_robot=True)
-        except:
-            print("Dock not found... trying again")
-            time.sleep(0.1)
 
 
 class Tasks:
@@ -249,13 +241,13 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         # Slow the base down if we are close to the nav target for grasp to limit blur
         if (
             not self.grasp_attempted
-            and self.rho < 0.2
-            and abs(self.heading_err) < np.rad2deg(30)
+            and self.rho < 0.5
+            and abs(self.heading_err) < np.deg2rad(30)
         ):
-            self.slowdown_base = 0.75  # Hz
+            self.pause_after_action = 0.75  # seconds to pause for
             print("!!!!!!Slow mode!!!!!!")
         else:
-            self.slowdown_base = -1
+            self.pause_after_action = -1
         disable_oa = False if self.rho > 0.3 and self.config.USE_OA_FOR_NAV else None
         observations, reward, done, info = SpotBaseEnv.step(
             self,
