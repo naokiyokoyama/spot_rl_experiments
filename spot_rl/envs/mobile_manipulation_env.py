@@ -4,8 +4,6 @@ from collections import Counter
 
 import magnum as mn
 import numpy as np
-from spot_wrapper.spot import Spot
-
 from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.envs.gaze_env import SpotGazeEnv
 from spot_rl.real_policy import GazePolicy, MixerPolicy, NavPolicy, PlacePolicy
@@ -20,6 +18,7 @@ from spot_rl.utils.utils import (
     object_id_to_nav_waypoint,
     place_target_from_waypoints,
 )
+from spot_wrapper.spot import Spot
 
 DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 
@@ -107,6 +106,7 @@ def main(spot, use_mixer, config, out_path=None):
             if trip_idx >= num_objects:
                 try:
                     spot.dock(dock_id=DOCK_ID, home_robot=True)
+                    spot.home_robot()
                     break
                 except:
                     pass
@@ -239,15 +239,19 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             max_joint_movement_key = "MAX_JOINT_MOVEMENT"
 
         # Slow the base down if we are close to the nav target for grasp to limit blur
-        if (
-            not self.grasp_attempted
-            and self.rho < 0.5
-            and abs(self.heading_err) < np.deg2rad(30)
-        ):
-            self.pause_after_action = 0.75  # seconds to pause for
+        if self.rho < 0.5 and abs(self.heading_err) < np.deg2rad(30):
+            # Seconds to pause for if base is moving
+            self.pause_after_action = True
+            if self.grasp_attempted:
+                self.base_action_pause = 0.5
+                self.arm_only_pause = 0.0
+            else:
+                self.base_action_pause = 1.2
+                self.arm_only_pause = 0.6
+
             print("!!!!!!Slow mode!!!!!!")
         else:
-            self.pause_after_action = -1
+            self.pause_after_action = False
         disable_oa = False if self.rho > 0.3 and self.config.USE_OA_FOR_NAV else None
         observations, reward, done, info = SpotBaseEnv.step(
             self,
@@ -269,15 +273,18 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
             self.goal_xy, self.goal_heading = (waypoint[:2], waypoint[2])
             self.navigating_to_place = True
             info["grasp_success"] = True
+            observations.update(
+                self.get_nav_observation(self.goal_xy, self.goal_heading)
+            )
+            self.rho = observations["target_point_goal_gps_and_compass_sensor"][0]
+            self.heading_err = observations["goal_heading"][0]
 
         return observations, reward, done, info
 
     def get_observations(self):
         observations = self.get_nav_observation(self.goal_xy, self.goal_heading)
-        rho = observations["target_point_goal_gps_and_compass_sensor"][0]
-        self.rho = rho
-        goal_heading = observations["goal_heading"][0]
-        self.heading_err = goal_heading
+        self.rho = observations["target_point_goal_gps_and_compass_sensor"][0]
+        self.heading_err = observations["goal_heading"][0]
         self.use_mrcnn = True
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()

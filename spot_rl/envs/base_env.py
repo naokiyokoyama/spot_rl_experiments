@@ -51,6 +51,7 @@ ORIG_WIDTH = 640
 ORIG_HEIGHT = 480
 WIDTH_SCALE = 0.5
 HEIGHT_SCALE = 0.5
+MAX_GRASP_DISTANCE = 0.7
 
 
 def pad_action(action):
@@ -123,8 +124,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.latest_synchro_obj_detection = None
         self.mrcnn_viz = None
         self.last_seen_objs = []
-        self.pause_after_action = -1
-        self.prev_base_moved = False
+        self.pause_after_action = False
+        self.base_action_pause = 0
+        self.arm_only_pause = 0
         self.should_end = False
         self.specific_target_object = None
         self.last_target_sighting = -1
@@ -208,8 +210,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.obj_center_pixel = None
         self.place_attempted = False
         self.detection_timestamp = -1
-        self.pause_after_action = -1
-        self.prev_base_moved = False
+        self.pause_after_action = False
+        self.base_action_pause = 0
+        self.arm_only_pause = 0
         self.should_end = False
         self.specific_target_object = None
         self.last_target_sighting = -1
@@ -219,7 +222,6 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def grasp(self):
         # Briefly pause and get latest gripper image to ensure precise grasp
-        time.sleep(0.9)
         self.get_gripper_images(save_image=True)
 
         if self.curr_forget_steps == 0:
@@ -382,12 +384,6 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
             self.execute_base_arm_action(base_action, arm_action, disable_oa)
 
-        if self.prev_base_moved and base_action is None:
-            # If we moved in the previous step, but not this one, make it stand still
-            self.spot.set_base_velocity(0, 0, 0, MAX_CMD_DURATION)
-            self.spot.stand()
-        self.prev_base_moved = base_action is not None
-
         print(f"base_action: {arr2str(base_action)}\tarm_action: {arr2str(arm_action)}")
 
         if not (grasp or place) and base_action is None and arm_action is None:
@@ -399,9 +395,12 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.stopwatch.record("run_actions")
         if base_action is not None:
             self.spot.set_base_velocity(0, 0, 0, 0.5)
+            self.spot.stand()
 
-        if self.pause_after_action > 0:
-            time.sleep(self.pause_after_action)
+        if self.pause_after_action:
+            time.sleep(
+                self.arm_only_pause if base_action is None else self.base_action_pause
+            )
 
         observations = self.get_observations()
         self.stopwatch.record("get_observations")
@@ -424,7 +423,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if self.config.USE_REMOTE_SPOT and not time.time() - pre_grasp > 3:
             return False
 
-        time.sleep(1)
+        time.sleep(0.2)  # Sometimes the finger angle doesn't update in time
         finger_angle = self.spot.get_proprioception()["arm0.f1x"].position.value
         if np.rad2deg(finger_angle) > -1.0:
             # Grasped on to nothing
@@ -622,8 +621,6 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                             # Only state target object if it's now different
                             self.say("Now targeting " + self.target_obj_name)
                         self.last_target_obj = self.target_obj_name
-                    else:
-                        return None  # not sure what to target yet, exit early
                     self.last_seen_objs = good_detections
                 else:
                     # If we have a target, focus on it; don't track other objects yet
@@ -714,7 +711,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
     def should_grasp(self):
         grasp = False
         if self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED:
-            if self.target_object_distance < 0.85:
+            if self.target_object_distance < MAX_GRASP_DISTANCE:
                 if self.config.ASSERT_CENTERING:
                     x, y = self.obj_center_pixel
                     if abs(x / 640 - 0.5) < 0.25 or abs(y / 480 - 0.5) < 0.25:
