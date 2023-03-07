@@ -320,8 +320,10 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             target_yaw = wrap_heading(self.yaw + base_action[2] * (1 / self.ctrl_hz))
             timeout = 1 / self.ctrl_hz * 1.5
             goal_met = False
-            while time.time() > start_time + timeout:
-                if abs(wrap_heading(self.yaw - target_yaw)) < np.deg2rad(3):
+            initial_error = wrap_heading(self.yaw - target_yaw)
+            while time.time() < start_time + timeout:
+                curr_error = wrap_heading(self.yaw - target_yaw)
+                if initial_error > 0 > curr_error or initial_error < 0 < curr_error:
                     lin_only = [base_action[0], 0, 0]
                     self.spot.set_base_velocity(
                         *lin_only,
@@ -557,6 +559,8 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             self.last_target_sighting != -1
             and time.time() - self.last_target_sighting > 3
         ):
+            # Return arm to nominal position if we haven't seen the target object in a
+            # while (3 seconds)
             self.spot.set_arm_joint_positions(
                 positions=np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES), travel_time=1.0
             )
