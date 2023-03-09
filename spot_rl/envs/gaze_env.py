@@ -2,11 +2,10 @@ import time
 
 import cv2
 import numpy as np
-from spot_wrapper.spot import Spot, wrap_heading
-
 from spot_rl.envs.base_env import SpotBaseEnv
 from spot_rl.real_policy import GazePolicy
 from spot_rl.utils.utils import construct_config, get_default_parser
+from spot_wrapper.spot import Spot, wrap_heading
 
 DEBUG = False
 
@@ -20,13 +19,22 @@ def run_env(spot, config, target_obj_id=None, orig_pos=None):
     policy = GazePolicy(config.WEIGHTS.GAZE, device=config.DEVICE)
     policy.reset()
     observations = env.reset(target_obj_id=target_obj_id)
+    if target_obj_id is not None:
+        env.specific_target_object = target_obj_id
     done = False
     env.say("Starting episode")
     if orig_pos is None:
         orig_pos = (float(env.x), float(env.y), np.pi)
+
+    env.pause_after_action = True
+    env.arm_only_pause = 0.15
+    input("Waiting for keyboard input...")
     while not done:
         action = policy.act(observations)
         observations, _, done, _ = env.step(arm_action=action)
+        if config.GRASP_EVERY_STEP and not done:
+            time.sleep(0.2)
+
     print("Returning to original position...")
     baseline_navigate(spot, orig_pos, limits=False)
     print("Returned.")
@@ -47,7 +55,7 @@ def baseline_navigate(spot, waypoint, limits=True, **kwargs):
         )
     else:
         cmd_id = spot.set_base_position(
-            x_pos=goal_x, y_pos=goal_y, yaw=goal_heading, end_time=100
+            x_pos=goal_x, y_pos=goal_y, yaw=-goal_heading, end_time=100
         )
     cmd_status = None
     success = False
@@ -66,7 +74,7 @@ def baseline_navigate(spot, waypoint, limits=True, **kwargs):
                 cmd_id = spot.set_base_position(
                     x_pos=goal_x,
                     y_pos=goal_y,
-                    yaw=goal_heading,
+                    yaw=-goal_heading,
                     end_time=100,
                     max_fwd_vel=0.5,
                     max_hor_vel=0.05,
@@ -74,7 +82,7 @@ def baseline_navigate(spot, waypoint, limits=True, **kwargs):
                 )
             else:
                 cmd_id = spot.set_base_position(
-                    x_pos=goal_x, y_pos=goal_y, yaw=goal_heading, end_time=100
+                    x_pos=goal_x, y_pos=goal_y, yaw=-goal_heading, end_time=100
                 )
 
         x, y, yaw = spot.get_xy_yaw()
@@ -141,10 +149,12 @@ if __name__ == "__main__":
     spot = Spot("RealGazeEnv")
     parser = get_default_parser()
     parser.add_argument("--target-object", "-t")
+    parser.add_argument("-k", "--keep-lease", action="store_true")
     args = parser.parse_args()
     config = construct_config(args.opts)
     with spot.get_lease(hijack=True):
         try:
             run_env(spot, config, target_obj_id=args.target_object)
         finally:
-            spot.power_off()
+            if args.keep_lease:
+                spot.spot_lease.dont_return_lease = True

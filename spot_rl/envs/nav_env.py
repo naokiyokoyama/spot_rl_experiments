@@ -20,6 +20,7 @@ def main(spot):
     parser.add_argument("-g", "--goal")
     parser.add_argument("-w", "--waypoint")
     parser.add_argument("-d", "--dock", action="store_true")
+    parser.add_argument("-k", "--keep-lease", action="store_true")
     args = parser.parse_args()
     config = construct_config(args.opts)
 
@@ -44,17 +45,23 @@ def main(spot):
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(base_action=action)
-        if args.dock:
-            env.say("Executing automatic docking")
-            dock_start_time = time.time()
-            while time.time() - dock_start_time < 2:
-                try:
-                    spot.dock(dock_id=DOCK_ID, home_robot=True)
-                except:
-                    print("Dock not found... trying again")
-                    time.sleep(0.1)
+            if args.dock and try_docking(spot):
+                break
+        if spot.is_docked:
+            print("Docked successfully, homing robot")
+            spot.home_robot()
+
     finally:
-        spot.power_off()
+        if args.keep_lease:
+            spot.spot_lease.dont_return_lease = True
+
+
+def try_docking(spot):
+    try:
+        spot.dock(dock_id=DOCK_ID, home_robot=True)
+        return True
+    except:
+        return False
 
 
 class SpotNavEnv(SpotBaseEnv):

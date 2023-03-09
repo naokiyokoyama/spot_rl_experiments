@@ -51,7 +51,7 @@ ORIG_WIDTH = 640
 ORIG_HEIGHT = 480
 WIDTH_SCALE = 0.5
 HEIGHT_SCALE = 0.5
-MAX_GRASP_DISTANCE = 0.7
+MAX_OBJECT_DIST_THRESH = 1.4
 
 
 def pad_action(action):
@@ -85,8 +85,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             k: FixSizeOrderedDict(maxlen=DETECTIONS_BUFFER_LEN)
             for k in ["detections", "filtered_depth", "viz"]
         }
+        rospy.set_param("/spot_mrcnn_publisher/active", config.USE_MRCNN)
 
-        super().__init__(spot=spot)
+        super().__init__(spot=spot, no_mrcnn=not config.USE_MRCNN)
 
         self.config = config
         self.spot = spot
@@ -95,7 +96,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         self.stopwatch = stopwatch
 
         # General environment parameters
-        self.ctrl_hz = config.CTRL_HZ
+        self.ctrl_hz = float(config.CTRL_HZ)
         self.max_episode_steps = config.MAX_EPISODE_STEPS
         self.num_steps = 0
         self.reset_ran = False
@@ -233,8 +234,9 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             if success:
                 # Just leave the object on the receptacle if desired
                 if self.config.DONT_PICK_UP:
+                    print("DONT_PICK_UP is True, so releasing the object.")
                     self.spot.open_gripper()
-                self.grasp_attempted = True
+                    time.sleep(0.1)  # w/o this delay, sometimes the gripper won't open
                 arm_positions = np.deg2rad(self.config.PLACE_ARM_JOINT_ANGLES)
             else:
                 self.say("BD grasp API failed.")
@@ -245,9 +247,24 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             self.spot.set_arm_joint_positions(positions=arm_positions, travel_time=1.0)
             # Wait for arm to return to position
             time.sleep(1)
-            self.last_target_sighting = -1
-            if self.config.TERMINATE_ON_GRASP:
-                self.should_end = True
+
+            # something_in_gripper() also returns True if the gripper is open
+            if success:
+                success = self.something_in_gripper()
+                if success:
+                    self.grasp_attempted = True
+                    self.last_target_sighting = -1
+                    if self.config.TERMINATE_ON_GRASP:
+                        self.should_end = True
+                else:
+                    arm_positions = np.deg2rad(self.config.GAZE_ARM_JOINT_ANGLES)
+                    self.spot.set_arm_joint_positions(
+                        positions=arm_positions, travel_time=0.3
+                    )
+                    self.spot.open_gripper()
+                    self.say("BD grasp API failed.")
+                    # Wait for arm to return to position
+                    time.sleep(0.3)
 
     def place(self):
         print("PLACE ACTION CALLED: Opening the gripper!")
@@ -423,14 +440,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if self.config.USE_REMOTE_SPOT and not time.time() - pre_grasp > 3:
             return False
 
-        time.sleep(0.2)  # Sometimes the finger angle doesn't update in time
-        finger_angle = self.spot.get_proprioception()["arm0.f1x"].position.value
-        if np.rad2deg(finger_angle) > -1.0:
-            # Grasped on to nothing
-            self.spot.open_gripper()
-            return False
-
         return ret
+
+    def something_in_gripper(self):
+        finger_angle = self.spot.get_proprioception()["arm0.f1x"].position.value
+        return np.rad2deg(finger_angle) < -1.0
 
     @staticmethod
     def get_nav_success(observations, success_distance, success_angle):
@@ -605,7 +619,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
                         class_id, score = d.split(",")[:2]
                         class_id, score = int(class_id), float(score)
                         dist = get_obj_dist_and_bbox(self.get_det_bbox(d), arm_depth)[0]
-                        if score > 0.8 and dist < MAX_HAND_DEPTH:
+                        if score > 0.8 and dist < MAX_OBJECT_DIST_THRESH:
                             good_detections.append(object_id_to_object_name(class_id))
                             if score > most_confident_score:
                                 most_confident_score = score
@@ -711,7 +725,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
     def should_grasp(self):
         grasp = False
         if self.locked_on_object_count >= self.config.OBJECT_LOCK_ON_NEEDED:
-            if self.target_object_distance < MAX_GRASP_DISTANCE:
+            if self.target_object_distance < self.config.MAX_GRASP_DISTANCE:
                 if self.config.ASSERT_CENTERING:
                     x, y = self.obj_center_pixel
                     if abs(x / 640 - 0.5) < 0.25 or abs(y / 480 - 0.5) < 0.25:

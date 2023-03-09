@@ -25,7 +25,23 @@ DOCK_ID = int(os.environ.get("SPOT_DOCK_ID", 520))
 DEBUGGING = False
 
 
-def main(spot, use_mixer, config, out_path=None):
+def main(spot, use_mixer, config, demo_mode=False, out_path=None):
+    if use_mixer:
+        env_class = SpotMobileManipulationBaseEnv
+    else:
+        env_class = SpotMobileManipulationSeqEnv
+
+    env = env_class(config, spot)
+
+    if demo_mode:
+        # Stand up first, and then speak to the audience while neural nets load into
+        # memory in the background
+        env.power_robot()
+        env.say(
+            "Hello everyone, my name is Spot. "
+            "I am now getting ready to rearrange some objects."
+        )
+
     if use_mixer:
         policy = MixerPolicy(
             config.WEIGHTS.MIXER,
@@ -34,7 +50,6 @@ def main(spot, use_mixer, config, out_path=None):
             config.WEIGHTS.PLACE,
             device=config.DEVICE,
         )
-        env_class = SpotMobileManipulationBaseEnv
     else:
         policy = SequentialExperts(
             config.WEIGHTS.NAV,
@@ -42,11 +57,10 @@ def main(spot, use_mixer, config, out_path=None):
             config.WEIGHTS.PLACE,
             device=config.DEVICE,
         )
-        env_class = SpotMobileManipulationSeqEnv
 
-    env = env_class(config, spot)
-    env.power_robot()
-    time.sleep(1)
+    if not demo_mode:
+        env.power_robot()
+
     count = Counter()
     out_data = []
 
@@ -242,16 +256,24 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         if self.rho < 0.5 and abs(self.heading_err) < np.deg2rad(30):
             # Seconds to pause for if base is moving
             self.pause_after_action = True
+            self.ctrl_hz = 2.0
             if self.grasp_attempted:
                 self.base_action_pause = 0.5
                 self.arm_only_pause = 0.0
             else:
                 self.base_action_pause = 1.2
-                self.arm_only_pause = 0.6
+                self.arm_only_pause = 0.3
 
             print("!!!!!!Slow mode!!!!!!")
+        elif (
+            self.rho > 0.8 or abs(self.heading_err) > np.deg2rad(80)
+        ) and not self.grasp_attempted:
+            # This effectively prevents determining the next target object unless we are
+            # close enough to the clutter receptacle
+            self.last_seen_objs = []
         else:
             self.pause_after_action = False
+            self.ctrl_hz = float(self.config.CTRL_HZ)
         disable_oa = False if self.rho > 0.3 and self.config.USE_OA_FOR_NAV else None
         observations, reward, done, info = SpotBaseEnv.step(
             self,
@@ -288,6 +310,17 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
         self.use_mrcnn = True
         observations.update(super().get_observations())
         observations["obj_start_sensor"] = self.get_place_sensor()
+        if (
+            self.navigating_to_place
+            and self.rho < 0.5
+            and abs(self.heading_err) < np.deg2rad(30)
+        ):
+            observations["spot_right_depth"][
+                observations["spot_right_depth"] == 1.0
+            ] = 0.0
+            observations["spot_left_depth"][
+                observations["spot_left_depth"] == 1.0
+            ] = 0.0
 
         return observations
 
@@ -352,18 +385,16 @@ class SpotMobileManipulationSeqEnv(SpotMobileManipulationBaseEnv):
 if __name__ == "__main__":
     parser = get_default_parser()
     parser.add_argument("-m", "--use-mixer", action="store_true")
+    parser.add_argument("-d", "--demo-mode", action="store_true")
     parser.add_argument("--output")
     args = parser.parse_args()
     config = construct_config(args.opts)
     spot = (RemoteSpot if config.USE_REMOTE_SPOT else Spot)("RealSeqEnv")
     if config.USE_REMOTE_SPOT:
         try:
-            main(spot, args.use_mixer, config, args.output)
+            main(spot, args.use_mixer, config, args.demo_mode, args.output)
         finally:
             spot.power_off()
     else:
         with spot.get_lease(hijack=True):
-            try:
-                main(spot, args.use_mixer, config, args.output)
-            finally:
-                spot.power_off()
+            main(spot, args.use_mixer, config, args.demo_mode, args.output)

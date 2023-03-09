@@ -289,9 +289,13 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
         self.pubs[rt.DETECTIONS_TOPIC] = rospy.Publisher(
             rt.DETECTIONS_TOPIC, String, queue_size=1, tcp_nodelay=True
         )
+        rospy.set_param("~active", True)
 
     def _publish(self):
         stopwatch = Stopwatch()
+        # Don't run if the node is set to inactive
+        if not rospy.get_param("~active"):
+            return
 
         # Publish the Mask RCNN detections
         header = self.img_msg.header

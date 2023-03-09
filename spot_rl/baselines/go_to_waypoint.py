@@ -15,7 +15,10 @@ def main(spot):
     parser.add_argument("-w", "--waypoint")
     parser.add_argument("-d", "--dock", action="store_true")
     parser.add_argument("-l", "--limit", action="store_true")
+    parser.add_argument("-k", "--keep-lease", action="store_true")
     args = parser.parse_args()
+    if args.keep_lease:
+        spot.spot_lease.dont_return_lease = True
     if args.waypoint is not None:
         goal_x, goal_y, goal_heading = nav_target_from_waypoints(args.waypoint)
     else:
@@ -32,6 +35,10 @@ def main(spot):
         kwargs = {}
 
     spot.power_on()
+    try:
+        spot.undock()
+    except:
+        pass
     spot.blocking_stand()
     cmd_id = spot.set_base_position(
         x_pos=goal_x,

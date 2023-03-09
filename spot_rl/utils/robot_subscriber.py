@@ -30,7 +30,7 @@ class SpotRobotSubscriberMixin:
     no_raw = False
     proprioception = True
 
-    def __init__(self, spot=None, *args, **kwargs):
+    def __init__(self, spot=None, no_mrcnn=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         rospy.init_node(self.node_name, disable_signals=True)
         self.cv_bridge = CvBridge()
@@ -50,7 +50,11 @@ class SpotRobotSubscriberMixin:
                 buff_size=2 ** 30,
             )
         rospy.loginfo(f"[{self.node_name}]: Waiting for images...")
-        while not all([self.msgs[s] is not None for s in subscriptions]):
+        if no_mrcnn:
+            check_subs = [i for i in subscriptions if i != rt.MASK_RCNN_VIZ_TOPIC]
+        else:
+            check_subs = subscriptions
+        while not all([self.msgs[s] is not None for s in check_subs]):
             pass
         rospy.loginfo(f"[{self.node_name}]: Received images!")
 
