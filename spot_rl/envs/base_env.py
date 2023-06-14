@@ -30,7 +30,12 @@ except:
     pass
 
 from sensor_msgs.msg import Image
-from spot_rl.utils.utils import FixSizeOrderedDict, arr2str, object_id_to_object_name
+from spot_rl.utils.utils import (
+    FixSizeOrderedDict,
+    arr2str,
+    object_id_to_object_name,
+    WAYPOINTS,
+)
 from spot_rl.utils.utils import ros_topics as rt
 from spot_wrapper.spot import Spot, wrap_heading
 from std_msgs.msg import Float32, String
@@ -159,7 +164,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
         if config.USE_MRCNN:
             self.mrcnn_viz_pub = rospy.Publisher(
-                rt.MASK_RCNN_VIZ_TOPIC, Image, queue_size=1
+                rt.OBJECT_DETECTION_VIZ_TOPIC, Image, queue_size=1
             )
 
         if config.USE_HEAD_CAMERA:
@@ -188,7 +193,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def img_callback(self, topic, msg):
         super().img_callback(topic, msg)
-        if topic == rt.MASK_RCNN_VIZ_TOPIC:
+        if topic == rt.OBJECT_DETECTION_VIZ_TOPIC:
             self.detections_buffer["viz"][int(msg.header.stamp.nsecs)] = msg
         elif topic == rt.FILTERED_HAND_DEPTH:
             self.detections_buffer["filtered_depth"][int(msg.header.stamp.nsecs)] = msg
@@ -223,6 +228,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def grasp(self):
         # Briefly pause and get latest gripper image to ensure precise grasp
+        time.sleep(1.5)
         self.get_gripper_images(save_image=True)
 
         if self.curr_forget_steps == 0:
@@ -250,7 +256,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
             # something_in_gripper() also returns True if the gripper is open
             if success:
-                success = self.something_in_gripper()
+                success = not self.config.CHECK_GRIPPING or self.something_in_gripper()
                 if success:
                     self.grasp_attempted = True
                     self.last_target_sighting = -1
@@ -315,7 +321,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             self.spot.set_base_vel_and_arm_pos(
                 *base_action,
                 arm_action,
-                MAX_CMD_DURATION,
+                travel_time=1 / self.ctrl_hz * 0.9,
                 disable_obstacle_avoidance=disable_oa,
             )
         elif base_action is not None:
@@ -434,8 +440,15 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
 
     def attempt_grasp(self):
         pre_grasp = time.time()
+        grasp_type = WAYPOINTS.get("grasps", {}).get(self.target_obj_name, "any")
+        print(f"Grasping {self.target_obj_name} with {grasp_type} grasp!")
+        top_down_grasp = grasp_type == "top_down"
+        horizontal_grasp = grasp_type == "horizontal"
         ret = self.spot.grasp_hand_depth(
-            self.obj_center_pixel, top_down_grasp=True, timeout=10
+            self.obj_center_pixel,
+            top_down_grasp=top_down_grasp,
+            horizontal_grasp=horizontal_grasp,
+            timeout=10,
         )
         if self.config.USE_REMOTE_SPOT and not time.time() - pre_grasp > 3:
             return False
@@ -598,6 +611,11 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
         if self.curr_forget_steps >= self.forget_target_object_steps:
             self.target_obj_name = None
 
+        if self.specific_target_object is not None:
+            # If we're looking for a specific object, focus on only that
+            self.target_obj_name = self.specific_target_object
+            rospy.set_param("/spot_owlvit_publisher/vocab", f"{self.target_obj_name}")
+
         if detections_str == "None":
             return None  # there were no detections at all, exit early
         else:
@@ -607,10 +625,7 @@ class SpotBaseEnv(SpotRobotSubscriberMixin, gym.Env):
             ]
             print("[mask_rcnn]: Detected:", ", ".join(detected_classes))
 
-            if self.specific_target_object is not None:
-                # If we're looking for a specific object, focus on only that
-                self.target_obj_name = self.specific_target_object
-            else:
+            if self.specific_target_object is None:
                 if self.target_obj_name is None:
                     most_confident_class_id = None
                     most_confident_score = 0.0
@@ -882,8 +897,13 @@ def get_obj_dist_and_bbox(obj_bbox, arm_depth):
 
     # Estimate distance from the gripper to the object
     depth_box = arm_depth[y1:y2, x1:x2]
+    object_distance = np.median(depth_box) * MAX_HAND_DEPTH
 
-    return np.median(depth_box) * MAX_HAND_DEPTH, arm_depth_bbox
+    # Don't give the object bbox if it's far for the depth camera to even see
+    if object_distance == MAX_HAND_DEPTH:
+        arm_depth_bbox = np.zeros_like(arm_depth, dtype=np.float32)
+
+    return object_distance, arm_depth_bbox
 
 
 def angle_between(v1, v2):

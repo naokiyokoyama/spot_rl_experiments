@@ -45,11 +45,12 @@ def main(spot):
         while not done:
             action = policy.act(observations)
             observations, _, done, _ = env.step(base_action=action)
-            if args.dock and try_docking(spot):
-                break
-        if spot.is_docked:
-            print("Docked successfully, homing robot")
-            spot.home_robot()
+            if args.dock:
+                try_docking(spot)
+                if spot.is_docked:
+                    print("Docked successfully, homing robot")
+                    spot.home_robot()
+                    break
 
     finally:
         if args.keep_lease:
@@ -59,9 +60,8 @@ def main(spot):
 def try_docking(spot):
     try:
         spot.dock(dock_id=DOCK_ID, home_robot=True)
-        return True
     except:
-        return False
+        pass
 
 
 class SpotNavEnv(SpotBaseEnv):

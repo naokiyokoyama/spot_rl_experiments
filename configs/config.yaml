@@ -51,6 +51,8 @@ JOINT_BLACKLIST: [3, 5] # joints we can't control "arm0.el0", "arm0.wr1"
 ACTUALLY_MOVE_ARM: True
 GRASP_EVERY_STEP: False
 TERMINATE_ON_GRASP: False
+CHECK_GRIPPING: True
+ROBOT_HEIGHT_OFFSET: 0.0
 
 # Mask RCNN
 GRAYSCALE_MASK_RCNN: True
@@ -60,3 +62,7 @@ USE_DEBLURGAN: True
 IMAGE_SCALE: 0.7
 # After this many time steps of not seeing the current target object, we become open to looking for new ones
 FORGET_TARGET_OBJECT_STEPS: 8
+
+# Owl ViT
+OWL_VIT_SCORE_THRESH: 0.05
+OWL_VIT_PROMPT: "a photo of a {}"

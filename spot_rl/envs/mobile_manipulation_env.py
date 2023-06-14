@@ -136,7 +136,7 @@ def main(spot, use_mixer, config, demo_mode=False, out_path=None):
             env.stopwatch.print_stats(latest=True)
 
         # Ensure gripper is open (place may have timed out)
-        if not env.place_attempted:
+        if not env.place_attempted and not env.spot.is_docked:
             env.spot.open_gripper()
             time.sleep(2)
 
@@ -261,12 +261,12 @@ class SpotMobileManipulationBaseEnv(SpotGazeEnv):
                 self.base_action_pause = 0.5
                 self.arm_only_pause = 0.0
             else:
-                self.base_action_pause = 1.2
-                self.arm_only_pause = 0.3
+                self.base_action_pause = 1.5
+                self.arm_only_pause = 0.85
 
             print("!!!!!!Slow mode!!!!!!")
         elif (
-            self.rho > 0.8 or abs(self.heading_err) > np.deg2rad(80)
+            self.rho > 1.5 or abs(self.heading_err) > np.deg2rad(120)
         ) and not self.grasp_attempted:
             # This effectively prevents determining the next target object unless we are
             # close enough to the clutter receptacle

@@ -4,3 +4,4 @@ numpy
 opencv-python
 gym
 ruamel.yaml
+transformers

@@ -8,8 +8,11 @@ import blosc
 import cv2
 import numpy as np
 import rospy
+import torch
+import yaml
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
+from spot_rl.utils.depth_map_utils import filter_depth
 from spot_wrapper.spot import Spot
 from spot_wrapper.spot import SpotCamIds as Cam
 from spot_wrapper.spot import image_response_to_cv2, scale_depth_img
@@ -21,8 +24,6 @@ from std_msgs.msg import (
     String,
 )
 
-from spot_rl.utils.depth_map_utils import filter_depth
-
 try:
     from spot_rl.utils.mask_rcnn_utils import (
         generate_mrcnn_detections,
@@ -30,10 +31,11 @@ try:
         get_mrcnn_model,
         pred2string,
     )
+    from spot_rl.utils.owl_vit_utils import OwlViT
 except ModuleNotFoundError:
     pass
 from spot_rl.utils.stopwatch import Stopwatch
-from spot_rl.utils.utils import construct_config
+from spot_rl.utils.utils import WAYPOINTS, construct_config
 from spot_rl.utils.utils import ros_topics as rt
 
 MAX_PUBLISH_FREQ = 20
@@ -51,7 +53,9 @@ class SpotImagePublisher:
         self.cv_bridge = CvBridge()
         self.last_publish = time.time()
         self.pubs = {
-            k: rospy.Publisher(k, self.publish_msg_type, queue_size=1, tcp_nodelay=True)
+            k: rospy.Publisher(
+                k, self.publish_msg_type, queue_size=1, tcp_nodelay=True
+            )
             for k in self.publisher_topics
         }
         rospy.loginfo(f"[{self.name}]: Publisher initialized.")
@@ -89,14 +93,20 @@ class SpotLocalRawImagesPublisher(SpotImagePublisher):
         self.spot = spot
 
     def _publish(self):
-        image_responses = self.spot.get_image_responses(self.sources, quality=100)
+        image_responses = self.spot.get_image_responses(
+            self.sources, quality=100
+        )
         imgs_list = [image_response_to_cv2(r) for r in image_responses]
         imgs = {k: v for k, v in zip(self.sources, imgs_list)}
 
-        head_depth = np.hstack([imgs[Cam.FRONTRIGHT_DEPTH], imgs[Cam.FRONTLEFT_DEPTH]])
+        head_depth = np.hstack(
+            [imgs[Cam.FRONTRIGHT_DEPTH], imgs[Cam.FRONTLEFT_DEPTH]]
+        )
 
         head_depth = self._scale_depth(head_depth, head_depth=True)
-        hand_depth = self._scale_depth(imgs[Cam.HAND_DEPTH_IN_HAND_COLOR_FRAME])
+        hand_depth = self._scale_depth(
+            imgs[Cam.HAND_DEPTH_IN_HAND_COLOR_FRAME]
+        )
         hand_rgb = imgs[Cam.HAND_COLOR]
 
         msgs = self.imgs_to_msgs(head_depth, hand_depth, hand_rgb)
@@ -160,12 +170,16 @@ class SpotLocalCompressedImagesPublisher(SpotLocalRawImagesPublisher):
             else:
                 rgb_bytes.append(details["bytes"])
                 rgb_dims.append(details["dims"])
-        depth_bytes = np.frombuffer(depth_bytes, dtype=np.uint8).astype(int) - 128
+        depth_bytes = (
+            np.frombuffer(depth_bytes, dtype=np.uint8).astype(int) - 128
+        )
         bytes_data = np.concatenate([depth_bytes, *rgb_bytes])
         timestamp = str(time.time())
         timestamp_dim = MultiArrayDimension(label=timestamp, size=0)
         dims = depth_dims + rgb_dims + [timestamp_dim]
-        msg = ByteMultiArray(layout=MultiArrayLayout(dim=dims), data=bytes_data)
+        msg = ByteMultiArray(
+            layout=MultiArrayLayout(dim=dims), data=bytes_data
+        )
         return [msg]
 
 
@@ -177,7 +191,10 @@ class SpotProcessedImagesPublisher(SpotImagePublisher):
         super().__init__()
         self.img_msg = None
         rospy.Subscriber(
-            self.subscriber_topic, self.subscriber_msg_type, self.cb, queue_size=1
+            self.subscriber_topic,
+            self.subscriber_msg_type,
+            self.cb,
+            queue_size=1,
         )
         rospy.loginfo(f"[{self.name}]: is waiting for images...")
         while self.img_msg is None:
@@ -274,10 +291,44 @@ class SpotFilteredHandDepthImagesPublisher(SpotFilteredDepthImagesPublisher):
     publisher_topics = [rt.FILTERED_HAND_DEPTH]
 
 
-class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
-    name = "spot_mrcnn_publisher"
+class SpotObjectDetectionPublisher(SpotProcessedImagesPublisher):
     subscriber_topic = rt.HAND_RGB
-    publisher_topics = [rt.MASK_RCNN_VIZ_TOPIC]
+    publisher_topics = [rt.OBJECT_DETECTION_VIZ_TOPIC]
+
+    def _publish(self):
+        stopwatch = Stopwatch()
+        # Don't run if the node is set to inactive
+        if not rospy.get_param("~active", True):
+            return
+
+        # Publish the detections
+        header = self.img_msg.header
+        timestamp = header.stamp
+        hand_rgb = self.msg_to_cv2(self.img_msg)
+
+        with torch.no_grad():
+            pred_string, viz_img = self.get_pred_string_and_viz_img(
+                hand_rgb, stopwatch=stopwatch
+            )
+
+        detections_str = f"{int(timestamp.nsecs)}|{pred_string}"
+        if not detections_str.endswith("None"):
+            print(detections_str)
+        viz_img_msg = self.cv2_to_msg(viz_img, encoding="bgr8")
+        viz_img_msg.header = header
+        stopwatch.record("vis_secs")
+
+        stopwatch.print_stats()
+
+        self.pubs[rt.DETECTIONS_TOPIC].publish(detections_str)
+        self.pubs[self.publisher_topics[0]].publish(viz_img_msg)
+
+    def get_pred_string_and_viz_img(self, hand_rgb, stopwatch):
+        raise NotImplementedError
+
+
+class SpotMRCNNPublisher(SpotObjectDetectionPublisher):
+    name = "spot_mrcnn_publisher"
 
     def __init__(self):
         self.config = config = construct_config()
@@ -291,16 +342,7 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
         )
         rospy.set_param("~active", True)
 
-    def _publish(self):
-        stopwatch = Stopwatch()
-        # Don't run if the node is set to inactive
-        if not rospy.get_param("~active"):
-            return
-
-        # Publish the Mask RCNN detections
-        header = self.img_msg.header
-        timestamp = header.stamp
-        hand_rgb = self.msg_to_cv2(self.img_msg)
+    def get_pred_string_and_viz_img(self, hand_rgb, stopwatch):
         pred, viz_img = generate_mrcnn_detections(
             hand_rgb,
             scale=self.image_scale,
@@ -310,19 +352,120 @@ class SpotMRCNNPublisher(SpotProcessedImagesPublisher):
             return_img=True,
             stopwatch=stopwatch,
         )
-        detections_str = f"{int(timestamp.nsecs)}|{pred2string(pred)}"
-
+        pred_string = pred2string(pred)
         viz_img = self.mrcnn.visualize_inference(viz_img, pred)
-        if not detections_str.endswith("None"):
-            print(detections_str)
-        viz_img_msg = self.cv2_to_msg(viz_img)
-        viz_img_msg.header = header
-        stopwatch.record("vis_secs")
 
-        stopwatch.print_stats()
+        return pred_string, viz_img
 
-        self.pubs[rt.DETECTIONS_TOPIC].publish(detections_str)
-        self.pubs[rt.MASK_RCNN_VIZ_TOPIC].publish(viz_img_msg)
+
+class SpotOwlViTPublisher(SpotObjectDetectionPublisher):
+    name = "spot_owlvit_publisher"
+
+    def __init__(self):
+        self.config = config = construct_config()
+
+        self.classes_to_id = {}
+        self.object_targets = WAYPOINTS["object_targets"]
+        self.image_scale = config.IMAGE_SCALE
+        texts = []
+        self.owlvit = OwlViT(texts)
+        self.update_vocab()
+
+        self.score_thresh = config.OWL_VIT_SCORE_THRESH
+        self.deblurgan = get_deblurgan_model(config)
+
+        rospy.loginfo(f"[{self.name}]: Models loaded.")
+
+        super().__init__()
+
+        self.pubs[rt.DETECTIONS_TOPIC] = rospy.Publisher(
+            rt.DETECTIONS_TOPIC, String, queue_size=1, tcp_nodelay=True
+        )
+        rospy.set_param("~active", True)
+        self.last_result = None
+        self.last_result_time = float("-inf")
+
+    def update_targets(self):
+        this_dir = osp.dirname(osp.abspath(__file__))
+        spot_rl_dir = osp.join(osp.dirname(osp.dirname(this_dir)))
+        configs_dir = osp.join(spot_rl_dir, "configs")
+        waypoints_yaml = osp.join(configs_dir, "waypoints.yaml")
+        with open(waypoints_yaml) as f:
+            waypoints = yaml.safe_load(f)
+        self.object_targets = waypoints["object_targets"]
+        self.last_result = None
+        self.last_result_time = float("-inf")
+
+    def update_vocab(self, vocab=None):
+        texts = []
+        for class_id, v in self.object_targets.items():
+            object_name = v[0].replace("_", " ")
+            if self.config.OWL_VIT_PROMPT != "":
+                label = self.config.OWL_VIT_PROMPT.format(object_name)
+            else:
+                label = object_name
+            self.classes_to_id[label] = class_id
+            if label not in texts:
+                if vocab is None or v[0] in vocab:
+                    texts.append(label)
+        if tuple(self.owlvit.texts[0]) != tuple(texts):
+            self.last_result = None
+            self.last_result_time = float("-inf")
+        self.owlvit.texts = [texts]
+
+    def get_pred_string_and_viz_img(self, hand_rgb, stopwatch):
+        vocab = rospy.get_param("~vocab", "")
+        if vocab == "":
+            vocab = None
+        else:
+            vocab = vocab.split(",")
+        print("Current vocab:", vocab)
+
+        self.update_vocab(vocab)
+
+        if self.image_scale != 1.0:
+            hand_rgb = cv2.resize(
+                hand_rgb,
+                (0, 0),
+                fx=self.image_scale,
+                fy=self.image_scale,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        if self.deblurgan is not None:
+            hand_rgb = self.deblurgan(
+                cv2.cvtColor(hand_rgb, cv2.COLOR_BGR2RGB)
+            )
+            hand_rgb = cv2.cvtColor(hand_rgb, cv2.COLOR_RGB2BGR)
+            stopwatch.record("deblur_secs")
+
+        try:
+            results = self.owlvit.detect_objects(
+                hand_rgb, score_threshold=self.score_thresh
+            )
+        except IndexError:
+            self.update_targets()
+            results = self.owlvit.detect_objects(
+                hand_rgb, score_threshold=self.score_thresh
+            )
+
+        if len(results[0]["scores"]) > 0:
+            self.last_result = results
+            self.last_result_time = rospy.get_time()
+        elif (
+            rospy.get_time() - self.last_result_time < 1.5
+            and self.last_result is not None
+        ):
+            results = self.last_result
+
+        stopwatch.record("owlvit_secs")
+
+        viz_img = self.owlvit.visualize_results(
+            hand_rgb, results, score_threshold=self.score_thresh
+        )
+        pred_string = self.owlvit.pred2string(results, self.classes_to_id)
+
+        return pred_string, viz_img
 
 
 if __name__ == "__main__":
@@ -333,8 +476,12 @@ if __name__ == "__main__":
     parser.add_argument("--decompress", action="store_true")
     parser.add_argument("--raw", action="store_true")
     parser.add_argument("--compress", action="store_true")
-    parser.add_argument("--core", action="store_true", help="running on the Core")
-    parser.add_argument("--listen", action="store_true", help="listening to Core")
+    parser.add_argument(
+        "--core", action="store_true", help="running on the Core"
+    )
+    parser.add_argument(
+        "--listen", action="store_true", help="listening to Core"
+    )
     parser.add_argument(
         "--local", action="store_true", help="fully local robot connection"
     )
@@ -359,11 +506,16 @@ if __name__ == "__main__":
     elif filter_hand_depth:
         node = SpotFilteredHandDepthImagesPublisher()
     elif mrcnn:
-        node = SpotMRCNNPublisher()
+        # node = SpotMRCNNPublisher()
+        node = SpotOwlViTPublisher()
     elif decompress:
         node = SpotDecompressingRawImagesPublisher()
     elif raw or compress:
-        name = "LocalRawImagesPublisher" if raw else "LocalCompressedImagesPublisher"
+        name = (
+            "LocalRawImagesPublisher"
+            if raw
+            else "LocalCompressedImagesPublisher"
+        )
         spot = Spot(name)
         if raw:
             node = SpotLocalRawImagesPublisher(spot)
